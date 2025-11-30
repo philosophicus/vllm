@@ -90,6 +90,7 @@ class PluggableLayer(nn.Module):
             raise TypeError("Decorator can only be applied to classes.")
 
 
+# 已阅
 class CustomOp(nn.Module):
     """
     Base class for custom ops.
@@ -109,6 +110,9 @@ class CustomOp(nn.Module):
         if op_name not in op_registry_oot:
             op_cls_to_instantiate = cls
         else:
+            # 说明：参考下面的注释 "if in-tree layer class is registered with an oot_custom_op layer,
+            # the oot_custom_op layer will be used instead"，即注册的时候使用 @CustomOp.register_oot 装饰器，
+            # 名称与某个 CustomOp 注册时使用的 in-tree 的类名相同，那么实例化的时候会使用 oot 版本的类
             op_cls_to_instantiate = op_registry_oot[op_name]
             logger.debug(
                 "Instantiating custom op: %s using %s",
@@ -166,6 +170,7 @@ class CustomOp(nn.Module):
         # specific backend. Currently, we do not support dynamic dispatching.
         compilation_config = get_cached_compilation_config()
 
+        # 说明：_enforce_enable 目前应用于多模态模型，未来在设计出多模态专用的 compilation_config 之后会移除
         # NOTE(shen-shanshan): CustomOp object can be enforce enabled, e.g.,
         # enable device-specific kernels in ViT models when enabling graph
         # mode. By default, it will follow the compilation_config to determine
@@ -263,6 +268,8 @@ class CustomOp(nn.Module):
         count_all = compilation_config.custom_ops.count("all")
         assert count_none + count_all == 1
 
+        # 说明：上面的 assert 保证了 count_none 和 count_all 只能有一个大于 0
+        # 优化点：可以直接 return count_all > 0
         return not count_none > 0 or count_all > 0
 
     # Decorator to register custom ops.

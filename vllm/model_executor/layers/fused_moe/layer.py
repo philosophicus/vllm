@@ -57,6 +57,7 @@ from vllm.utils.math_utils import round_up
 logger = init_logger(__name__)
 
 
+# 已阅
 class FusedMoeWeightScaleSupported(Enum):
     TENSOR = "tensor"
     CHANNEL = "channel"
@@ -64,6 +65,7 @@ class FusedMoeWeightScaleSupported(Enum):
     BLOCK = "block"
 
 
+# 已阅
 def determine_expert_map(
     ep_size: int,
     ep_rank: int,
@@ -110,10 +112,15 @@ def determine_expert_map(
     local_num_experts = base_experts + 1 if ep_rank < remainder else base_experts
 
     # Create a tensor of size num_experts filled with -1
+    # 说明：global index -> local index 映射表，未分配给当前 rank 的 expert 用 -1 填充
     expert_map = torch.full((global_num_experts,), -1, dtype=torch.int32)
     # Create an expert map for the local experts
     if expert_placement_strategy == "linear":
+        # 说明：min(ep_rank, remainder) 用于处理余数的分配，
+        # ep_rank <= remainder 时，前面 ep_rank 个 rank 都会多分配一个 expert，一共多分配了 ep_rank 个 expert
+        # ep_rank > remainder 时，前面的所有 rank 把 remainder 个 expert 分配完了，就不需要再多分配了
         start_idx = ep_rank * base_experts + min(ep_rank, remainder)
+        # 说明：分配连续的 expert 给当前 rank
         expert_map[start_idx : start_idx + local_num_experts] = torch.arange(
             0, local_num_experts, dtype=torch.int32
         )
@@ -122,6 +129,7 @@ def determine_expert_map(
             ep_rank, global_num_experts, ep_size, dtype=torch.int32
         )
 
+        # 说明：分配等间隔的 expert 给当前 rank
         expert_map[local_log_experts] = torch.arange(
             0, local_num_experts, dtype=torch.int32
         )
@@ -137,12 +145,15 @@ def determine_expert_map(
         expert_mask = torch.ones(
             (global_num_experts + num_fused_shared_experts + 1,), dtype=torch.int32
         )
+        # 说明：sentinel expert
         expert_mask[-1] = 0
         expert_mask[:global_num_experts] = expert_map > -1
+        # 说明：shared experts 全部分配给当前 rank
         expert_map = torch.cat(
             (
                 expert_map,
                 torch.tensor(
+                    # 说明：生成 shared experts 的本地索引
                     [local_num_experts + i for i in range(num_fused_shared_experts)],
                     dtype=torch.int32,
                 ),
@@ -153,6 +164,7 @@ def determine_expert_map(
     return (local_num_experts, expert_map, expert_mask)
 
 
+# 已阅
 def determine_expert_placement_strategy(
     expert_placement_strategy: ExpertPlacementStrategy,
     moe_parallel_config: FusedMoEParallelConfig,
@@ -210,6 +222,7 @@ def get_compressed_expert_map(expert_map: torch.Tensor) -> str:
     )
 
 
+# 已阅
 # TODO(rob): move this down to the kernel.
 def maybe_roundup_hidden_size(
     hidden_size: int,
@@ -246,6 +259,7 @@ def maybe_roundup_hidden_size(
     )
 
     # we are padding globally so EP buffer allocation works
+    # 说明：mxfp4 = Microscaling FP4，布局为 E2M1
     if model_type == "gpt_oss" and is_mxfp4_quant:
         from vllm.model_executor.layers.quantization.mxfp4 import (
             Mxfp4Backend,
@@ -340,6 +354,7 @@ class FusedMoE(CustomOp):
         self._routed_input_transform = routed_input_transform
 
         if params_dtype is None:
+            # 说明：浮点类型默认精度
             params_dtype = torch.get_default_dtype()
         self.params_dtype = params_dtype
 
@@ -363,6 +378,7 @@ class FusedMoE(CustomOp):
         pcp_size_ = pcp_size if pcp_size is not None else get_pcp_group().world_size
 
         self.is_sequence_parallel = is_sequence_parallel
+        # 说明：序列并行大小与张量并行大小相同
         self.sp_size = tp_size_ if is_sequence_parallel else 1
 
         self.moe_parallel_config: FusedMoEParallelConfig = FusedMoEParallelConfig.make(
@@ -385,6 +401,7 @@ class FusedMoE(CustomOp):
         compilation_config = vllm_config.compilation_config
         if prefix in compilation_config.static_forward_context:
             raise ValueError("Duplicate layer name: {}".format(prefix))
+        # 说明：将当前层注册到静态前向上下文中
         compilation_config.static_forward_context[prefix] = self
         compilation_config.static_all_moe_layers.append(prefix)
         self.layer_name = prefix
@@ -423,6 +440,8 @@ class FusedMoE(CustomOp):
         # Determine expert maps
         if self.use_ep:
             if self.enable_eplb:
+                # 说明：开启 EPLB 时，专家数量必须能被 ep_size 整除；
+                # global_num_experts 是包含冗余专家的总专家数量
                 assert self.global_num_experts % self.ep_size == 0, (
                     "EPLB currently only supports even distribution of "
                     "experts across ranks."
@@ -449,6 +468,7 @@ class FusedMoE(CustomOp):
                 num_fused_shared_experts=self.num_fused_shared_experts,
                 return_expert_mask=self.rocm_aiter_fmoe_enabled,
             )
+            # 说明：不包含 num_fused_shared_experts
             self.local_num_experts = local_num_experts
             self.register_buffer("_expert_map", expert_map)
             self.register_buffer("expert_mask", expert_mask)
@@ -482,7 +502,11 @@ class FusedMoE(CustomOp):
                 (expert_mask == 0) | (expert_mask == 1)
             ), "Aiter Fused MoE kernel only supports expert_map with 0 and 1s."
 
+        # 说明：intermediate_size 指 Expert 的中间层大小，
+        # 维度从 hidden_size 映射到 intermediate_size，再映射回 hidden_size
         assert intermediate_size % self.tp_size == 0
+        # 说明：每个张量并行分区上的 intermediate size
+        # 对 intermediate_size 进行 tp 切分，即对 gate/up 做 column parallel，对 down 做 row parallel
         self.intermediate_size_per_partition = intermediate_size // self.tp_size
         self.reduce_results = reduce_results
         self.renormalize = renormalize
@@ -494,6 +518,7 @@ class FusedMoE(CustomOp):
             assert num_expert_group is not None and topk_group is not None
         self.num_expert_group = num_expert_group
         self.topk_group = topk_group
+        # 说明：支持自定义路由函数
         self.custom_routing_function = custom_routing_function
         self.scoring_func = scoring_func
         self.routed_scaling_factor = routed_scaling_factor
@@ -669,10 +694,12 @@ class FusedMoE(CustomOp):
         # routing_tables only needed for round-robin expert placement with
         # DeepEP all2all backend.
         routing_tables = self._maybe_init_expert_routing_tables()
+        # 说明：只有当 dp_size > 1 and use_ep 时，才会创建 prepare_finalize，后面才会切换到 ModularMethod
         prepare_finalize = self.quant_method.maybe_make_prepare_finalize(
             routing_tables=routing_tables
         )
         if prepare_finalize is not None:
+            # 说明：只有当 prepare_finalize 不为 None 时，才会切换到 ModularMethod
             logger.debug(
                 "%s for %s(%s)", prepare_finalize.__class__.__name__, self, id(self)
             )
@@ -728,6 +755,8 @@ class FusedMoE(CustomOp):
         # By default, router/gate is called before FusedMoE forward pass
         return self.gate is not None
 
+    # 已阅
+    # 说明：round-robin + DeepEP-ll all2all 后端需要专家路由表
     def _maybe_init_expert_routing_tables(
         self,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
@@ -767,6 +796,7 @@ class FusedMoE(CustomOp):
 
         return routing_tables
 
+    # 已阅
     @staticmethod
     def ensure_round_robin_expert_routing_tables(
         global_num_experts: int,
@@ -779,21 +809,31 @@ class FusedMoE(CustomOp):
         global_indices = torch.arange(
             global_num_experts, dtype=torch.long, **device_kwargs
         )
+        # 说明：属于哪个 rank
         owner = torch.remainder(global_indices, ep_size)
+        # 说明：rank 内的局部索引
         local_index = torch.div(global_indices, ep_size, rounding_mode="floor")
+        # 说明：每个 rank 分配到的专家数量
         base = global_num_experts // ep_size
+        # 说明：余数专家数量
         remainder = global_num_experts % ep_size
         physical_offset = owner * base
         if remainder > 0:
             remainder_tensor = torch.tensor(
                 remainder, dtype=torch.long, **device_kwargs
             )
+            # 说明：rank < remainder 的 rank 会多分配一个专家，对应的偏移量需要加 rank；
+            # rank >= remainder 的 rank 偏移量就是 remainder，因为前面的 rank 已经把 remainder 个专家分完了 
             physical_offset = physical_offset + torch.minimum(owner, remainder_tensor)
 
+        # 说明：全局索引（逻辑专家索引）-> 物理索引（设备上的专家索引）
+        # 物理索引的范围也是 [0, global_num_experts)
         global_to_physical = physical_offset + local_index
         physical_to_global = torch.empty_like(global_to_physical)
+        # 说明：物理索引（设备上的专家索引）-> 全局索引（逻辑专家索引）
         physical_to_global[global_to_physical] = global_indices
 
+        # 说明：ep_rank 上的专家对应的全局索引
         local_global = torch.arange(
             ep_rank,
             global_num_experts,
@@ -1402,6 +1442,7 @@ class FusedMoE(CustomOp):
             and not name.startswith("_gate.")
         ]
 
+    # 已阅
     def set_eplb_state(
         self,
         moe_layer_idx: int,

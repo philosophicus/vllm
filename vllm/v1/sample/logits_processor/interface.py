@@ -26,6 +26,10 @@ RemovedRequest = int
 
 # (index, params, prompt_tok_ids, output_tok_ids) tuples for new
 # requests added to the batch.
+# 说明：Note that the output token ids list grows with each engine step, 
+# and this growth is visible to the logits processor because output 
+# token ids are passed by reference. This is important for 
+# LogitsProcessors that take into account the tokens generated so far.
 AddedRequest = tuple[int, SamplingParams, list[int] | None, list[int]]
 
 # (index 1, index 2, directionality) tuples representing
@@ -33,6 +37,7 @@ AddedRequest = tuple[int, SamplingParams, list[int] | None, list[int]]
 MovedRequest = tuple[int, int, MoveDirectionality]
 
 
+# 已阅
 @dataclass(frozen=True)
 class BatchUpdate:
     """Persistent batch state change info for logitsprocs"""
@@ -57,7 +62,11 @@ class BatchUpdate:
     moved: Sequence[MovedRequest]
 
 
+# 已阅
+# 说明：所有 LogitsProcessor 的抽象基类
+# 系统有内置的子类，也支持自定义
 class LogitsProcessor(ABC):
+    # 说明：抛异常后调用方（API 内）会捕获并处理，返回错误信息给用户
     @classmethod
     def validate_params(cls, sampling_params: SamplingParams):
         """Validate sampling params for this logits processor.
@@ -72,6 +81,7 @@ class LogitsProcessor(ABC):
     ) -> None:
         raise NotImplementedError
 
+    # 说明：logits 的 shape 是 (num_requests, vocab_size)
     @abstractmethod
     def apply(self, logits: torch.Tensor) -> torch.Tensor:
         """Apply LogitsProcessor to batch logits tensor.
@@ -91,6 +101,8 @@ class LogitsProcessor(ABC):
         """
         raise NotImplementedError
 
+    
+    # 说明：注意处理顺序：removed, added, moved
     @abstractmethod
     def update_state(
         self,

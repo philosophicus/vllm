@@ -21,6 +21,7 @@ from vllm.utils.torch_utils import set_default_torch_dtype
 logger = init_logger(__name__)
 
 
+# 已阅
 class BaseModelLoader(ABC):
     """Base class for model loaders."""
 
@@ -51,6 +52,7 @@ class BaseModelLoader(ABC):
         target_device = torch.device(load_device)
         with set_default_torch_dtype(model_config.dtype):
             with target_device:
+                # 说明：第一步，初始化模型结构
                 model = initialize_model(
                     vllm_config=vllm_config, model_config=model_config, prefix=prefix
                 )
@@ -58,6 +60,7 @@ class BaseModelLoader(ABC):
             log_model_inspection(model)
 
             logger.debug("Loading weights on %s ...", load_device)
+            # 说明：第二步，加载权重
             # Quantization does not happen in `load_weights` but after it
             self.load_weights(model, model_config)
 
@@ -71,11 +74,16 @@ class BaseModelLoader(ABC):
                     scope="local",
                 )
 
+            # 说明：第三步，权重后处理，如量化等
             process_weights_after_loading(model, model_config, target_device)
 
+        # 说明：第四步，设置模型为评估模式
+        # 如：禁用 Dropout；对 BatchNorm 层不再计算当前批次的均值，
+        # 以及固定 BatchNorm 层的统计量（全局移动均值和全局移动方差）
         return model.eval()
 
 
+# 已阅
 def log_model_inspection(model: nn.Module) -> None:
     """Log model structure if VLLM_LOG_MODEL_INSPECTION=1."""
     if not envs.VLLM_LOG_MODEL_INSPECTION:

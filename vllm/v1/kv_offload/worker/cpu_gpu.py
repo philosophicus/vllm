@@ -29,6 +29,7 @@ class Transfer:
     num_bytes: int
 
 
+# 已阅
 def expand_block_ids(
     block_ids: np.ndarray,
     block_size_factor: int,
@@ -62,6 +63,7 @@ def expand_block_ids(
         output_idx = output_end_idx
 
 
+# 已阅
 class SingleDirectionOffloadingHandler(OffloadingHandler):
     """
     SingleDirectionOffloadingHandler handles transfers for a single direction,
@@ -128,6 +130,11 @@ class SingleDirectionOffloadingHandler(OffloadingHandler):
 
         src_sub_block_count = src_blocks.size * self.src_block_size_factor
         dst_sub_block_count = dst_blocks.size * self.dst_block_size_factor
+        # 说明：计算需要跳过的源子块数量，以保证源子块数量减去跳过的数量后等于目标子块数量
+        # 说明：负数模运算，得到的结果是正数
+        # 说明：从 CPU 向 GPU 传输时，src_block_size_factor 较大，可能需要跳过一些源子块，
+        # 比如 (2, 2) -> (3, 1)，需要源跳过 1 个子块
+        # 问题：从 GPU 向 CPU 传输时，会不会也需要跳过一些源子块？这些没有 offload 的源子块会发生什么
         src_sub_blocks_to_skip = -dst_blocks.size % self.src_block_size_factor
 
         assert dst_sub_block_count == src_sub_block_count - src_sub_blocks_to_skip
@@ -193,6 +200,8 @@ class SingleDirectionOffloadingHandler(OffloadingHandler):
 
     def get_finished(self) -> list[TransferResult]:
         results: list[TransferResult] = []
+        # 说明：从队首开始遍历所有已经完成的传输任务，直到遇到第一个未完成的任务为止
+        # 因为传输任务是串行执行的，前一个结束了，后一个才能开始
         while self._transfers and self._transfers[0].end_event.query():
             transfer = self._transfers.popleft()
             transfer_time = (

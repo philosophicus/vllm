@@ -7,6 +7,7 @@ logger = init_logger(__name__)
 
 
 try:
+    # 说明：源码 https://github.com/vllm-project/tpu-inference
     from tpu_inference.platforms import (
         TpuPlatform as TpuInferencePlatform,
     )

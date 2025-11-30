@@ -5,6 +5,7 @@
 import torch
 
 
+# 已阅
 def update_tensor_inplace(dst: torch.Tensor, src: torch.Tensor):
     assert dst.dtype == src.dtype, "Tensors must have the same dtype"
 
@@ -17,6 +18,7 @@ def update_tensor_inplace(dst: torch.Tensor, src: torch.Tensor):
         del src
 
 
+# 已阅
 # Newly generated tensors need to replace existing tensors that are
 # already registered as parameters by vLLM (and won't be freed)
 def replace_parameter(
@@ -26,6 +28,7 @@ def replace_parameter(
     if (
         type(old) is type(new)
         and old.dtype == new.dtype
+        # 说明：占用显存大小相同可以直接替换
         and old.untyped_storage().nbytes() == new.untyped_storage().nbytes()
     ):
         # If we can just update in-place to avoid re-registering
@@ -38,4 +41,6 @@ def replace_parameter(
         # parameters for `torch.compile` compatibility
         if not isinstance(new, torch.nn.Parameter):
             new = torch.nn.Parameter(new, requires_grad=False)
+        # 说明：对应上面的描述，ensures that all parameter subclasses get re-registered as
+        # parameters for `torch.compile` compatibility
         mod.register_parameter(name, torch.nn.Parameter(new, requires_grad=False))

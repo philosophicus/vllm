@@ -128,6 +128,7 @@ class SchedulerConfig:
     and starting configuration.
     """
 
+    # 说明：CPU 和 GPU 之间的异步调度，可以提高 GPU 利用率，减少空闲时间。
     async_scheduling: bool = Field(default=None)
     """If set to False, disable async scheduling. Async scheduling helps to
     avoid gaps in GPU utilization, leading to better latency and throughput.

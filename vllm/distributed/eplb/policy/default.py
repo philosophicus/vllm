@@ -18,7 +18,9 @@ import torch
 from .abstract import AbstractEplbPolicy
 
 
+# 已阅
 class DefaultEplbPolicy(AbstractEplbPolicy):
+    # 已阅
     @classmethod
     def balanced_packing(
         cls, weight: np.ndarray, num_packs: int
@@ -40,6 +42,7 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
         groups_per_pack = num_groups // num_packs
 
         if groups_per_pack == 1:
+            # 待看
             pack_index = np.tile(np.arange(num_groups, dtype=np.int64), (num_layers, 1))
             rank_in_pack = np.zeros_like(pack_index, dtype=np.int64)
             return pack_index, rank_in_pack
@@ -62,7 +65,9 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
                 # Pick the lightest pack; full packs are masked out by inf.
                 pack = int(np.argmin(weights_row))
 
+                # 说明：第 i 层，第 group 组，被分配到 pack 包中（节点）
                 pack_index[layer_idx, group] = pack
+                # 说明：第 i 层，第 group 组，在 pack 包（节点）中的排名（0-based）
                 rank_in_pack[layer_idx, group] = items_row[pack]
                 weights_row[pack] += weight[layer_idx, group]
                 items_row[pack] += 1
@@ -72,6 +77,7 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
 
         return pack_index, rank_in_pack
 
+    # 已阅
     @classmethod
     def replicate_experts(
         cls, weight: np.ndarray, num_phy: int
@@ -92,17 +98,29 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
         n, num_log = weight.shape
         num_redundant = num_phy - num_log
         assert num_redundant >= 0
+        # 说明：phy2log 的 shape 为 (n, num_phy)
         phy2log = np.tile(np.arange(num_phy, dtype=np.int64), (n, 1))
         replica_idx = np.zeros((n, num_phy), dtype=np.int64)
+        # 说明：logical expert 的计数，每个 logical expert 初始时都有 1 个 replica
         logcnt = np.ones((n, num_log), dtype=np.int64)
         arangen = np.arange(n, dtype=np.int64)
         for i in range(num_log, num_phy):
+            # 说明：找到所有行中当前负载最大的 logical experts
             redundant_indices = np.argmax(weight / logcnt, axis=-1)
+            # 说明：复制找到的 logical experts
             phy2log[:, i] = redundant_indices
+            # 说明：logcnt[arangen, redundant_indices] 表示找到的 logical experts 当前的 replica 数量，
+            # rank[:, i] 表示将找到的 logical experts 自身的 rank (1, 2, ...) 设置到位置 i；
+            # rank 的最终结果如 [0,0,0,1,2,1]，表示有一个 logical expert 有 3 个 replica，
+            # 有一个 logical expert 有 2 个 replica
             replica_idx[:, i] = logcnt[arangen, redundant_indices]
             logcnt[arangen, redundant_indices] += 1
         return phy2log, replica_idx, logcnt
 
+    # 已阅
+    # 说明：hierarchical 指的是分两层进行负载均衡，
+    # expert groups -> 节点
+    # experts in group -> GPU
     @classmethod
     def rebalance_experts_hierarchical(
         cls,
@@ -138,6 +156,7 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
         assert num_physical_experts % num_gpus == 0
         phy_experts_per_gpu = num_physical_experts // num_gpus
 
+        # 待看
         def inverse(perm: np.ndarray) -> np.ndarray:
             inv = np.empty_like(perm)
             row_idx = np.arange(perm.shape[0])[:, None]
@@ -146,9 +165,12 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
             return inv
 
         # Step 1: pack groups to nodes
+        # 说明：token_per_group 的 shape 为 [num_layers, num_groups]
         tokens_per_group = weight.reshape(num_layers, num_groups, group_size).sum(
             axis=-1
         )
+        # 说明：(num_layers, num_groups) -> node index
+        # 说明：(num_layers, num_groups) -> rank in node
         group_pack_index, group_rank_in_pack = cls.balanced_packing(
             tokens_per_group, num_nodes
         )
@@ -167,6 +189,9 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
         tokens_per_mlog = np.take_along_axis(weight, mlog2log, axis=1).reshape(
             -1, num_logical_experts // num_nodes
         )
+        # 说明：phy2mlog 的每一行表示该层所有物理专家对应的 mapping logical expert，如 [0,1,2,0,0,1]
+        # phy2mlog 和 replicas_idx 的 shape 为 (num_layers, num_physical_experts)
+        # mlogcnt 的 shape 为 (num_layers, num_logical_experts)
         phy2mlog, replicas_idx, mlogcnt = cls.replicate_experts(
             tokens_per_mlog, num_physical_experts // num_nodes
         )
@@ -177,7 +202,11 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
         pack_index, rank_in_pack = cls.balanced_packing(
             tokens_per_phy, num_gpus // num_nodes
         )
+        # 说明：pphy2pphy 的 shape 为 (num_layers * num_nodes, num_physical_experts // num_nodes)
         phy2pphy = pack_index * phy_experts_per_gpu + rank_in_pack
+        # 理解：pphy2phy 表示 packed physical expert 到 physical expert 的映射
+        # 此时 packed physical expert 的编号是连续的，physical expert 则是打乱后的 physical expert 编号
+        # 说明：pphy2phy 的 shape 为 (num_layers * num_nodes, num_physical_experts // num_nodes)
         pphy2phy = inverse(phy2pphy)
 
         # Reorder node-local logical indices into the post-packing physical order.
@@ -201,6 +230,9 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
         logcnt = np.take_along_axis(mlogcnt.reshape(num_layers, -1), log2mlog, axis=1)
         return pphy2log, pphy_replicas_idx, logcnt
 
+    # 已阅
+    # 说明：当 expert 在新旧布局中都存在时，尽量让其保持旧的 slot
+    # 仅在 GPU 数量和每个 GPU 的 slots 数量未改变时应用该方法
     @classmethod
     def preserve_intragpu_slots(
         cls,
@@ -224,6 +256,7 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
         slots_per_gpu = num_phy_experts // num_ranks
         num_layers = phy2log.shape[0]
 
+        # 说明：初始化返回结果
         post_phy2log = phy2log.copy()
         post_phy_replicas_idx = phy_replicas_idx.copy()
 
@@ -235,7 +268,9 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
             new_local = phy2log[:, start:end]  # [layers, slots]
             new_ridx = phy_replicas_idx[:, start:end]  # [layers, slots]
 
+            # 说明：True 表示该位置的新专家已经被处理过
             used_new_indices = np.zeros((num_layers, slots_per_gpu), dtype=bool)
+            # 说明：True 表示该位置的旧专家被保留
             preserved_positions = np.zeros((num_layers, slots_per_gpu), dtype=bool)
 
             # First pass: preserve same-logical experts in their previous slots
@@ -245,11 +280,15 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
                 matches = (new_local == old_local[:, slot_idx][:, None]) & (
                     ~used_new_indices
                 )
+                # 说明：has_any 的 shape 为 (num_layers,)，表示每一行是否有新旧一致的专家
                 has_any = matches.any(axis=1)
                 if np.any(has_any):
+                    # 说明：first_idx 的 shape 为 (num_layers,)，表示每一行第一个新旧一致专家的位置
                     first_idx = np.argmax(matches, axis=1)
+                    # 说明：layer_indices 表示有新旧一致专家的行索引
                     layer_indices = np.nonzero(has_any)[0]
                     matched_new_positions = first_idx[layer_indices]
+                    # 说明：将新旧一致的专家放到旧位置上（start + slot_idx）
                     post_phy2log[layer_indices, start + slot_idx] = new_local[
                         layer_indices, matched_new_positions
                     ]
@@ -263,6 +302,7 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
             remaining_mask = ~used_new_indices  # [layers, slots]
             fill_mask = ~preserved_positions  # [layers, slots]
             if remaining_mask.any() and fill_mask.any():
+                # 说明：idx_base 的 shape 为 (num_layers, slots_per_gpu)，表示每一行的索引
                 idx_base = np.tile(np.arange(slots_per_gpu), (num_layers, 1))
                 # Sentinel value for unavailable positions.
                 large = slots_per_gpu + 1
@@ -293,6 +333,7 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
 
         return post_phy2log, post_phy_replicas_idx
 
+    # 已阅
     @classmethod
     def rebalance_experts(
         cls,
@@ -336,6 +377,7 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
         )
 
         if num_groups % num_nodes == 0:
+            # 说明：expert groups 能够均匀分布到各个节点上
             # use hierarchical load-balance policy
             phy2log_np, phy_replicas_idx_np, logcnt_np = (
                 cls.rebalance_experts_hierarchical(
@@ -355,6 +397,7 @@ class DefaultEplbPolicy(AbstractEplbPolicy):
         # Only apply when the number of GPUs and slots per GPU remain unchanged.
         # Helps to avoid unnecessary weight copying when experts move
         # within the same GPU.
+        # 说明：rebalance 前后 expert 在同一 GPU 内移动时，保留其在物理专家中的位置，避免不必要的权重拷贝
         if old_global_expert_indices is not None:
             phy2log_np, phy_replicas_idx_np = cls.preserve_intragpu_slots(
                 phy2log_np, phy_replicas_idx_np, num_ranks, old_phy2log_np

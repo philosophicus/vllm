@@ -59,6 +59,8 @@ _POSSIBLE_KERNELS: dict[PlatformEnum, list[type[MPLinearKernel]]] = {
 }
 
 
+# 已阅
+# 说明：根据配置和设备计算能力选择合适的 MPLinearKernel 实现
 def choose_mp_linear_kernel(
     config: MPLinearLayerConfig, compute_capability: int | None = None
 ) -> type[MPLinearKernel]:

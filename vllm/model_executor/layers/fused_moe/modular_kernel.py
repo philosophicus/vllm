@@ -112,6 +112,7 @@ class ExpertTokensMetadata:
         )
 
 
+# 已阅
 class TopKWeightAndReduce(ABC):
     """
     An abstract base class for weight application and reduction implementations.
@@ -157,6 +158,7 @@ PrepareResultType = tuple[
 ReceiverType = Callable[[], PrepareResultType]
 
 
+# 说明：ctor = constructor
 # TODO: pass FusedMoEParallelConfig in as ctor parameter?
 class FusedMoEPrepareAndFinalize(ABC):
     """
@@ -793,6 +795,9 @@ def _slice_scales(
     return None
 
 
+# 说明：an interface class that combines a
+# FusedMoEPrepareAndFinalize and a FusedMoEPermuteExpertsUnpermute to
+# provide the standard fused MoE kernel interface
 @final
 class FusedMoEModularKernel(torch.nn.Module):
     """

@@ -8,18 +8,25 @@ import torch
 
 @dataclass
 class SpecDecodeMetadata:
+    # 说明：所有请求的 draft token ids 拼接在一起
     # [num_tokens]
     draft_token_ids: torch.Tensor
+    # 说明：每个请求的 draft token 数量
     # [batch_size]
     num_draft_tokens: list[int]
+    # 说明：累积的 draft token 数量
     # [batch_size]
     cu_num_draft_tokens: torch.Tensor
+    # 说明：累积的 sampled token 数量，每个请求的 sampled token 数量 = draft token 数量 + 1
     # [batch_size]
     cu_num_sampled_tokens: torch.Tensor
+    # 说明：在 logits_indices 中，target logits 的位置索引（排除最后一个 token，即 bonus token）
     # [num_tokens]
     target_logits_indices: torch.Tensor
+    # 说明：每个请求的最后一个 draft token 的位置
     # [batch_size]
     bonus_logits_indices: torch.Tensor
+    # 说明：在 input_ids 中，所有 sampled tokens 的位置
     # [num_tokens + batch_size]
     logits_indices: torch.Tensor
 

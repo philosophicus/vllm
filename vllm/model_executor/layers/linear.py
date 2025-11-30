@@ -156,6 +156,7 @@ def left_shift_bitsandbytes_4bit_shard(bnb_weight_attrs: dict[str, Any]):
     return left, right
 
 
+# 已阅
 class LinearMethodBase(QuantizeMethodBase):
     """Base class for different (maybe quantized) linear methods."""
 
@@ -164,6 +165,7 @@ class LinearMethodBase(QuantizeMethodBase):
         self,
         layer: torch.nn.Module,
         input_size_per_partition: int,
+        # 说明：输出维度被分片时，每个 rank 上各逻辑权重的输出维度大小列表
         output_partition_sizes: list[int],
         input_size: int,
         output_size: int,
@@ -185,6 +187,7 @@ class LinearMethodBase(QuantizeMethodBase):
         """
         raise NotImplementedError
 
+    # 说明：执行 matmul(A, B) + C，B 为 create_weights 创建的权重
     @abstractmethod
     def apply(
         self,
@@ -197,6 +200,7 @@ class LinearMethodBase(QuantizeMethodBase):
         raise NotImplementedError
 
 
+# 说明：未量化线性方法创建的权重 shape 为 (output_dim, input_dim)
 class UnquantizedLinearMethod(LinearMethodBase):
     """Linear method without quantization."""
 
@@ -229,6 +233,7 @@ class UnquantizedLinearMethod(LinearMethodBase):
         layer.register_parameter("weight", weight)
         set_weight_attrs(weight, extra_weight_attrs)
 
+    # 说明：在 model_loader 中的 process_weights_after_loading 方法中被调用
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         if current_platform.is_cpu():
             from vllm.model_executor.layers.utils import dispatch_cpu_unquantized_gemm
@@ -304,6 +309,7 @@ class LinearBase(PluggableLayer):
                 param.tp_size = self.tp_size
 
 
+# 说明：Replicated Linear 指每个 rank 都存储全量权重和偏置的线性层
 # --8<-- [start:replicated_linear]
 @PluggableLayer.register("replicated_linear")
 class ReplicatedLinear(LinearBase):

@@ -161,6 +161,7 @@ class KVCacheManager:
         self.prefix_cache_stats = PrefixCacheStats()
         return stats
 
+    # 已阅
     def get_computed_blocks(self, request: Request) -> tuple[KVCacheBlocks, int]:
         """Get the computed (cached) blocks for the request.
         Note that the computed blocks must be full.
@@ -187,6 +188,8 @@ class KVCacheManager:
         # num_computed_tokens to be block-size aligned. Removing this limitation
         # could slightly improve performance in the future.
         max_cache_hit_length = request.num_tokens - 1
+        # 补充：即 cached_blocks 和 num_new_cached_tokens = len(cached_blocks[0]) * block_size
+        # cached_blocks 中的 block 可能此时存在于 free queue 中
         computed_blocks, num_new_computed_tokens = (
             self.coordinator.find_longest_cache_hit(
                 request.block_hashes, max_cache_hit_length
@@ -203,6 +206,10 @@ class KVCacheManager:
 
         return self.create_kv_cache_blocks(computed_blocks), num_new_computed_tokens
 
+    # 补充：
+    # 传入 new_computed_blocks 是因为刚计算完还没有保存到 coordinator 中，需要在这里完成保存
+    # 只有新 request（非 running）才会传入 new_computed_blocks 和 num_new_computed_tokens，
+    # 因为这两个参数与 prefix caching 有关，而只有新 request 才会做 prefix caching
     def allocate_slots(
         self,
         request: Request,
@@ -341,6 +348,7 @@ class KVCacheManager:
             new_computed_block_list is not self.empty_kv_cache_blocks.blocks
             or num_external_computed_tokens > 0
         ):
+            # 补充：这里说明了延迟添加 new_computed_blocks 的原因
             # Append the new computed blocks to the request blocks until now to
             # avoid the case where the new blocks cannot be allocated.
             self.coordinator.allocate_new_computed_blocks(
@@ -350,6 +358,7 @@ class KVCacheManager:
                 num_external_computed_tokens=num_external_computed_tokens,
             )
 
+        # 补充：prefix caching 相关的 new_computed_blocks 已经保存，现在分配新的 blocks
         new_blocks = self.coordinator.allocate_new_blocks(
             request.request_id,
             num_tokens_need_slot,
@@ -359,6 +368,7 @@ class KVCacheManager:
 
         # P/D: delay caching blocks if we have to recv from
         # remote. Update state for locally cached blocks.
+        # 补充：如果是 P/D 场景且是接收远程 KV，则不缓存新分配的 blocks
         if not self.enable_caching or delay_cache_blocks:
             return self.create_kv_cache_blocks(new_blocks)
 

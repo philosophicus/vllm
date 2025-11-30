@@ -81,6 +81,7 @@ class AttentionBackendEnum(Enum, metaclass=_AttentionBackendEnumMeta):
     # set to None to avoid alias with other backend, whose value is an empty string
     CUSTOM = None
 
+    # 已阅
     def get_path(self, include_classname: bool = True) -> str:
         """Get the class path for this backend (respects overrides).
 

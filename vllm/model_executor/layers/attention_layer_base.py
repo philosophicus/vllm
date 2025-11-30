@@ -9,6 +9,7 @@ from vllm.v1.attention.backend import AttentionBackend, AttentionImpl
 from vllm.v1.kv_cache_interface import KVCacheSpec
 
 
+# 说明：值得注意的是 DeepseekV32IndexerCache 也是 AttentionLayerBase 的子类，是一种特殊的只有 K 没有 V 的 attention layer
 class AttentionLayerBase(ABC):
     """
     Base class for attention-like layers (Attention, Mamba, etc.)

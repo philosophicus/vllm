@@ -18,11 +18,15 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 
+# 已阅
+# 说明：Min-P 的作用是确保生成的 token 概率不低于某个阈值，阈值是基于当前最大概率乘以 min_p 得到的
+# 实现思路：对于那些启用了 min_p 的请求，计算出对应的阈值，然后将 logits 中小于该阈值的 token 的 logits 设置为 -inf
 class MinPLogitsProcessor(LogitsProcessor):
     def __init__(
         self, vllm_config: "VllmConfig", device: torch.device, is_pin_memory: bool
     ):
         max_num_reqs = vllm_config.scheduler_config.max_num_seqs
+        # 说明：用来记录有多少请求启用了 min_p
         self.min_p_count: int = 0
 
         self.min_p_cpu_tensor = torch.zeros(
@@ -49,6 +53,9 @@ class MinPLogitsProcessor(LogitsProcessor):
     def get_min_p_by_index(self, index: int) -> float:
         return float(self.min_p_cpu[index])
 
+    # 说明：注意处理顺序：removed, added, moved
+    # 但下面看起来是先处理了 added，再处理 removed，最后处理 moved
+    # 需要保证删除的请求索引不会出现在 added 列表中
     def update_state(self, batch_update: BatchUpdate | None):
         if not batch_update:
             return
@@ -60,6 +67,7 @@ class MinPLogitsProcessor(LogitsProcessor):
             min_p_before = self.min_p_cpu[index]
             if min_p_before != min_p:
                 needs_update = True
+                # 说明：只要新旧 min_p 不相等，就设置为新的 min_p
                 self.min_p_cpu[index] = min_p
                 if min_p and not min_p_before:
                     self.min_p_count += 1
@@ -68,6 +76,7 @@ class MinPLogitsProcessor(LogitsProcessor):
 
         if self.min_p_count:
             # Process removed requests.
+            # 说明：如果被移除的请求启用了 min_p，则将其计数减一
             if batch_update.removed:
                 needs_update = True
                 for index in batch_update.removed:
@@ -80,21 +89,27 @@ class MinPLogitsProcessor(LogitsProcessor):
                 min_p_a, min_p_b = self.min_p_cpu[adx], self.min_p_cpu[bdx]
                 if min_p_a != min_p_b:
                     needs_update = True
+                    # b 的值一定要被替换成 a 的值
                     self.min_p_cpu[bdx] = min_p_a
                     if direct == MoveDirectionality.SWAP:
+                        # swap 的话，a 的值也要被替换成 b 的值
                         self.min_p_cpu[adx] = min_p_b
                 if direct == MoveDirectionality.UNIDIRECTIONAL:
+                    # 单向时要清理值
                     if min_p_a:
                         self.min_p_cpu[adx] = 0
+                    # 如果原来的 b 有值，说明被覆盖掉了，计数要减一
                     if min_p_b:
                         self.min_p_count -= 1
 
         # Update tensors if needed.
         size = batch_update.batch_size
         if self.min_p_count and (needs_update or self.min_p.shape[0] != size):
+            # 说明：将 min_p_cpu_tensor 的前 size 个元素复制到 min_p_device 中
             self.min_p = self.min_p_device[:size]
             if self.use_double_tensor:
                 self.min_p.copy_(self.min_p_cpu_tensor[:size], non_blocking=True)
+            # 说明：维度调整为 (size, 1)
             self.min_p.unsqueeze_(1)
 
     def apply(self, logits: torch.Tensor) -> torch.Tensor:
@@ -114,13 +129,19 @@ class MinPLogitsProcessor(LogitsProcessor):
         return logits
 
 
+# 已阅
+# 说明：给请求的某些 token id 添加 bias 值
+# 问题：看实现的话 {token id: bias 值} 是请求级别的，因为来源是 sampling params，
+# 所以需要确认 sampling params 是否也是请求级别的，看会不会出现重复存储
 class LogitBiasLogitsProcessor(LogitsProcessor):
     def __init__(self, _, device: torch.device, is_pin_memory: bool):
         self.device = device
         self.pin_memory = is_pin_memory
+        # 问题：request index -> {？: ？}
         self.biases: dict[int, dict[int, float]] = {}
 
         self.bias_tensor: torch.Tensor = torch.tensor(())
+        # 说明：(req_idx_tensor, tok_id_tensor)
         self.logits_slice = (
             self._device_tensor([], torch.int32),
             self._device_tensor([], torch.int32),
@@ -132,12 +153,15 @@ class LogitBiasLogitsProcessor(LogitsProcessor):
         return False
 
     def update_state(self, batch_update: BatchUpdate | None):
+        # needs_update 表示是否对 self.biases 字典进行了更新
         needs_update = process_dict_updates(
             self.biases, batch_update, lambda params, _, __: params.logit_bias or None
         )
 
         # Update tensors if needed.
         if needs_update:
+            # 三个长度相同的大列表，分别存储请求索引、token id 和对应的 bias 值，
+            # 相同位置的元素构成一个三元组（request index, token id, bias 值）
             reqs: list[int] = []
             tok_ids: list[int] = []
             biases: list[float] = []
@@ -157,12 +181,16 @@ class LogitBiasLogitsProcessor(LogitsProcessor):
             data, device="cpu", dtype=dtype, pin_memory=self.pin_memory
         ).to(device=self.device, non_blocking=True)
 
+    # 说明：logits 的 shape 是 (num_requests, vocab_size)
     def apply(self, logits: torch.Tensor) -> torch.Tensor:
         if self.biases:
             logits[self.logits_slice] += self.bias_tensor
         return logits
 
 
+# 已阅
+# 说明：作用是确保生成的最少 token 数
+# 实现思路：对于那些还没有生成足够 token 的请求，将它们的停止词 token id 的 logits 设置为 -inf
 class MinTokensLogitsProcessor(LogitsProcessor):
     def __init__(
         self, vllm_config: "VllmConfig", device: torch.device, is_pin_memory: bool
@@ -194,6 +222,7 @@ class MinTokensLogitsProcessor(LogitsProcessor):
         min_tokens = params.min_tokens
         if not min_tokens or len(output_tok_ids) >= min_tokens:
             return None
+        # 如果限制了生成的最少 token 数且数量未达到，则同时返回停止词 token id 集合
         return min_tokens, output_tok_ids, params.all_stop_token_ids
 
     def update_state(self, batch_update: BatchUpdate | None):
@@ -202,6 +231,7 @@ class MinTokensLogitsProcessor(LogitsProcessor):
         )
         if self.min_toks:
             # Check for any requests that have attained their min tokens.
+            # 说明：删除那些已经生成足够 token 的请求
             to_remove = tuple(
                 index
                 for index, (min_toks, out_tok_ids, _) in self.min_toks.items()
@@ -237,6 +267,15 @@ class MinTokensLogitsProcessor(LogitsProcessor):
         return logits
 
 
+# 已阅
+# 作用：根据 new_state 函数对 batch_update 内容的处理结果，更新 req_entries 字典
+# 返回结果非 None 则保存到 req_entries 中，为 None 则从 req_entries 中删除请求 index
+# 返回值表示 req_entries 字典是否有更新
+# 相关文档中注明的处理顺序是：removed, added, moved，实际代码中是先处理 added，
+# 再处理 removed，最后处理 moved，这与 
+# https://docs.vllm.ai/en/latest/design/logits_processors/#how-the-vllm-engine-builds-the-batchupdate-data-structure
+# 中描述的维护 BatchUpdate 的顺序一致，实际上可以保证删除的请求索引不会出现在 added 列表中，
+# 也就是可以先处理 added 再处理 removed，不会影响最终结果
 def process_dict_updates(
     req_entries: dict[int, T],
     batch_update: BatchUpdate | None,

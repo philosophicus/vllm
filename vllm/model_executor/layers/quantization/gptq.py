@@ -40,6 +40,7 @@ else:
 logger = init_logger(__name__)
 
 
+# 已阅
 class GPTQConfig(QuantizationConfig):
     """Config class for GPTQ.
 
@@ -106,6 +107,7 @@ class GPTQConfig(QuantizationConfig):
         # used to identify GPTQ model quantized by autoround
         self.autoround_version = autoround_version
 
+        # 说明：GPTQ v2 已更名为 GPTAQ (https://github.com/Intelligent-Computing-Lab-Panda/GPTAQ )
         # GPTQ v1 and v2 format deals with zero points differently.
         # Currently GPTQModel stores v1 format checkpoints by default,
         # but provides the option to set `format="gptq_v2"` in `QuantizeConfig`.
@@ -126,6 +128,7 @@ class GPTQConfig(QuantizationConfig):
     def get_name(cls) -> QuantizationMethods:
         return "gptq"
 
+    # 说明：torch.half 即 float16
     @classmethod
     def get_supported_act_dtypes(cls) -> list[torch.dtype]:
         return [torch.half]

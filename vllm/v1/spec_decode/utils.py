@@ -11,11 +11,13 @@ from vllm.v1.attention.backends.utils import (
 PADDING_SLOT_ID = -1
 
 
+# 已阅
 @triton.jit
 def eagle_prepare_inputs_padded_kernel(
     cu_num_draft_tokens_ptr,  # [num_reqs]
     valid_sampled_tokens_count_ptr,  # [num_reqs]
     query_start_loc_gpu_ptr,  # [num_reqs + 1]
+    # 说明：每个请求对应的 token index to sample，通过最后一个 token index 减去 rejected token 数量得到
     token_indices_to_sample_ptr,  # [num_reqs] (output)
     num_rejected_tokens_gpu_ptr,  # [num_reqs] (output)
     num_reqs,  # tl.int32
@@ -54,6 +56,9 @@ def eagle_prepare_inputs_padded_kernel(
     tl.store(num_rejected_tokens_gpu_ptr + req_idx, num_rejected_tokens)
 
 
+# 已阅
+# 说明：找到 token id 不为 -1，值在 vocab 范围内，位置在有效采样 token 数量范围内的最后一个 token id，作为 next token id；
+# 否则使用 backup token id 作为 next token id，此时有效采样 token 数量为 0
 @triton.jit
 def eagle_prepare_next_token_padded_kernel(
     sampled_token_ids_ptr,  # [num_reqs, num_sampled_tokens_per_req]
@@ -83,6 +88,7 @@ def eagle_prepare_next_token_padded_kernel(
 
     if is_discarded:
         backup_token = tl.load(backup_next_token_ids_ptr + req_idx)
+        # 说明：标准 0 维标量，值为 0
         valid_count = tl.full((), 0, dtype=tl.uint32)
         tl.store(next_token_ids_ptr + req_idx, backup_token)
         tl.store(valid_sampled_tokens_count_ptr + req_idx, valid_count)
@@ -92,8 +98,10 @@ def eagle_prepare_next_token_padded_kernel(
         token_mask = token_offs < num_sampled_tokens_per_req
 
         row_ptr = sampled_token_ids_ptr + req_idx * stride_sampled_token_ids
+        # 说明：加载该请求的所有采样 token id，无效 token id 为 -1
         token_ids = tl.load(row_ptr + token_offs, mask=token_mask, other=-1)
 
+        # 说明：sampled token id 合法的条件包括 1. token id 不为 -1；2. 值在 vocab 范围内；3. 位置在有效采样 token 数量范围内
         # Rejected tokens are -1, valid tokens are in [0, vocab_size)
         is_valid_mask = (token_ids != -1) & (token_ids < vocab_size) & token_mask
         valid_count = tl.sum(is_valid_mask)

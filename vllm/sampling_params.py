@@ -487,6 +487,10 @@ class SamplingParams(
         if self.n > 1:
             raise ValueError(f"n must be 1 when using greedy sampling, got {self.n}.")
 
+    # 已阅
+    # 说明：负责处理停止词相关逻辑，处理参数中不同来源的 eos_token_id；
+    # all_stop_token_ids 比 stop_token_ids 至少要多一个 model_eos_token_id
+    # 理解：all_stop_token_ids 对内，stop_token_ids 对外？
     def update_from_generation_config(
         self,
         generation_config: dict[str, Any],
@@ -514,6 +518,8 @@ class SamplingParams(
                     eos_ids.update(self.stop_token_ids)
                     self.stop_token_ids = list(eos_ids)
 
+    # 已阅
+    # 说明：处理 bad_words 相关逻辑，需要利用到 tokenizer
     def update_from_tokenizer(self, tokenizer: TokenizerLike) -> None:
         if not self.bad_words:
             return
@@ -532,6 +538,8 @@ class SamplingParams(
                 # If no space at the beginning
                 # or if prefix space produces a new word token
                 if (not add_prefix_space) or (
+                    # 说明：添加 prefix space 后生成的 token_ids 和不添加时生成的 token_ids 的
+                    # 首个 token id 不同，但长度相同，则将该 token_ids 添加到 bad_words_token_ids 中
                     add_prefix_space
                     and prompt_token_ids[0] != self._bad_words_token_ids[-1][0]
                     and len(prompt_token_ids) == len(self._bad_words_token_ids[-1])

@@ -7,6 +7,8 @@ import numpy as np
 from vllm.v1.kv_offload.abstract import LoadStoreSpec
 
 
+# 已阅
+# 说明：基于 block IDs 的 load/store 规范
 class BlockIDsLoadStoreSpec(LoadStoreSpec, ABC):
     """
     Spec for loading/storing KV blocks from given block numbers.
@@ -19,6 +21,7 @@ class BlockIDsLoadStoreSpec(LoadStoreSpec, ABC):
         return repr(self.block_ids)
 
 
+# 已阅
 class GPULoadStoreSpec(BlockIDsLoadStoreSpec):
     """
     Spec for loading/storing a KV block to GPU memory.
@@ -29,6 +32,7 @@ class GPULoadStoreSpec(BlockIDsLoadStoreSpec):
         return "GPU"
 
 
+# 已阅
 class CPULoadStoreSpec(BlockIDsLoadStoreSpec):
     """
     Spec for loading/storing a KV block to CPU memory.

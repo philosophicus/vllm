@@ -165,12 +165,19 @@ class CudaGraphManager:
         return self.hidden_states[:num_tokens]
 
 
+# 已阅
+# 说明：根据 cudagraph capture sizes，计算 cudagraph sizes 映射表
+# 过程中会根据最大请求数或最大 token 数量，过滤掉过大的 capture sizes
+# 对于不需要限制 cudagraph size 的情况，返回空字典
 def get_cudagraph_sizes(
     capture_sizes: list[int] | None,
     max_num_reqs: int,
     max_num_tokens: int,
     cudagraph_mode: CUDAGraphMode,
 ) -> dict[int, int]:
+    # 理解：如果 cudagraph_mode 不包含 FULL，说明不需要考虑 capture size 的限制；
+    # 因为 piecewise capture 的核心目标正是规避单次 capture 的 size 限制，
+    # 而不需要捕获时更加不需要考虑 size 限制
     if not cudagraph_mode.has_full_cudagraphs():
         return {}
     if not capture_sizes:
@@ -179,8 +186,10 @@ def get_cudagraph_sizes(
     capture_sizes = sorted(capture_sizes)
     # Limit the capture sizes to the max number of requests or tokens.
     upper_bound = (
+        # 理解：不用考虑 prefill 阶段的大量 token，只需要关注 decode 阶段的请求数
         max_num_reqs
         if cudagraph_mode == CUDAGraphMode.FULL_DECODE_ONLY
+        # 理解：prefill + decode 或者 full cudagraph 模式下，关注最大 token 数量
         else max_num_tokens
     )
     capture_sizes = [x for x in capture_sizes if x <= upper_bound]
@@ -188,6 +197,8 @@ def get_cudagraph_sizes(
         return {}
 
     cudagraph_sizes: dict[int, int] = {}
+    # 说明：对于每个可能的输入大小 i，找到第一个大于等于 i 的 capture size 作为 cudagraph size
+    # 优化：双指针法
     for i in range(1, capture_sizes[-1] + 1):
         for x in capture_sizes:
             if i <= x:

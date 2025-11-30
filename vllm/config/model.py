@@ -268,6 +268,11 @@ class ModelConfig:
     used with `--generation-config auto`, the override parameters will be
     merged with the default config from the model. If used with
     `--generation-config vllm`, only the override parameters are used."""
+    # 说明：Sleep Mode allows you to temporarily release most GPU memory used by 
+    # a model, including model weights and KV cache, without stopping the server 
+    # or unloading the Docker container. This is especially useful for RLHF, 
+    # training, or cost-saving scenarios where GPU resources need to be freed 
+    # between inference workloads.
     enable_sleep_mode: bool = False
     """Enable sleep mode for the engine (only cuda and
     hip platforms are supported)."""
@@ -1725,10 +1730,12 @@ _SUFFIX_TO_DEFAULTS: list[tuple[str, tuple[RunnerType, ConvertType]]] = [
 ]
 
 
+# 已阅
 def iter_architecture_defaults():
     yield from _SUFFIX_TO_DEFAULTS
 
 
+# 已阅
 def try_match_architecture_defaults(
     architecture: str,
     *,

@@ -14,9 +14,12 @@ from vllm.v1.sample.ops.logprobs import batched_count_greater_than
 from vllm.v1.sample.ops.penalties import apply_all_penalties
 from vllm.v1.sample.ops.topk_topp_sampler import TopKTopPSampler
 
+# 说明：temperature 小于该值时，不对 logits 进行缩放（说明是 greedy sampling）
 _SAMPLING_EPS = 1e-5
 
 
+# 已阅
+# 说明：关注 output processing 中对采样 token logprobs 的处理
 class Sampler(nn.Module):
     """
     A layer that samples the next tokens from the model's outputs
@@ -64,6 +67,7 @@ class Sampler(nn.Module):
         self.pin_memory = is_pin_memory_available()
         self.logprobs_mode = logprobs_mode
 
+    # 已阅
     def forward(
         self,
         logits: torch.Tensor,
@@ -77,6 +81,7 @@ class Sampler(nn.Module):
         # This is different from the V0 sampler, which uses the logits that
         # is used for sampling (after penalties and temperature scaling).
         num_logprobs = sampling_metadata.max_num_logprobs
+        # 说明：is not None 表示需要返回 logprobs
         if num_logprobs is not None:
             if logprobs_mode == "raw_logprobs":
                 raw_logprobs = self.compute_logprobs(logits)
@@ -89,6 +94,7 @@ class Sampler(nn.Module):
         # Use float32 for the logits.
         logits = logits.to(torch.float32)
 
+        # 说明：logits 经过的处理包括 allowed token ids、bad words、logits processors (non_argmax_invariant)、penalties
         logits = self.apply_logits_processors(
             logits, sampling_metadata, predict_bonus_token
         )
@@ -128,6 +134,8 @@ class Sampler(nn.Module):
         )
         return sampler_output
 
+    # 已阅
+    # 说明：如果 temperature 非常小（< 1e-5，说明是 greedy sampling），则不对 logits 进行缩放（避免除以接近零的温度）
     @staticmethod
     def apply_temperature(
         logits: torch.Tensor,
@@ -140,10 +148,13 @@ class Sampler(nn.Module):
             temp = torch.where(temp < _SAMPLING_EPS, 1.0, temp)
         return logits.div_(temp.unsqueeze(dim=1))
 
+    # 已阅
+    # 说明：greedy_sample 直接用 loigts 而不是 logprobs，因为 argmax 不变
     @staticmethod
     def greedy_sample(logits: torch.Tensor) -> torch.Tensor:
         return logits.argmax(dim=-1).view(-1)
 
+    # 已阅
     def sample(
         self,
         logits: torch.Tensor,
@@ -157,6 +168,7 @@ class Sampler(nn.Module):
         """
 
         logprobs_mode = logprobs_mode_override or self.logprobs_mode
+        # 说明：all_greedy 和 all_random 不能同时为 True
         assert not (sampling_metadata.all_greedy and sampling_metadata.all_random)
         if sampling_metadata.all_random:
             greedy_sampled = None
@@ -169,6 +181,7 @@ class Sampler(nn.Module):
                         processed_logprobs = logits
                     elif logprobs_mode == "processed_logprobs":
                         processed_logprobs = self.compute_logprobs(logits)
+                # 说明：如果所有请求都是贪婪采样，则提前退出
                 return greedy_sampled, processed_logprobs
 
         assert sampling_metadata.temperature is not None
@@ -180,6 +193,11 @@ class Sampler(nn.Module):
 
         # Apply logits processors that only apply to random sampling
         # (argmax invariant)
+        # 补充：The vLLM logits processor abstraction requires the engine to 
+        # apply logits processors at batch granularity; therefore in practice 
+        # the argmax-invariant logits processors can only be skipped when 
+        # the entire batch uses greedy sampling.
+        # 参考上面的 all_greedy 提前退出的逻辑
         for processor in sampling_metadata.logitsprocs.argmax_invariant:
             logits = processor.apply(logits)
 
@@ -192,6 +210,7 @@ class Sampler(nn.Module):
         )
 
         if greedy_sampled is None:
+            # 说明：如果所有请求都是随机采样，则直接返回
             return random_sampled, processed_logprobs
 
         sampled = torch.where(
@@ -202,10 +221,12 @@ class Sampler(nn.Module):
         )
         return sampled, processed_logprobs
 
+    # 已阅
     @staticmethod
     def compute_logprobs(logits: torch.Tensor) -> torch.Tensor:
         return logits.log_softmax(dim=-1, dtype=torch.float32)
 
+    # 已阅
     @staticmethod
     def gather_logprobs(
         logprobs: torch.Tensor,
@@ -234,13 +255,16 @@ class Sampler(nn.Module):
         # Find the topK values.
         topk_logprobs, topk_indices = torch.topk(logprobs, num_logprobs, dim=-1)
 
+        # 说明：shape (num_tokens, 1)
         # Get with the logprob of the prompt or sampled token.
         token_ids = token_ids.unsqueeze(-1)
         token_logprobs = logprobs.gather(-1, token_ids)
 
+        # 说明：大于等于 token_logprobs 的 token 数量，即 token_logprobs 的排名
         # Compute the ranks of the actual token.
         token_ranks = batched_count_greater_than(logprobs, token_logprobs)
 
+        # 说明：token_ids 和 token_logprobs 拼接到 topk_indices 和 topk_logprobs 的前面
         # Concatenate together with the topk.
         indices = torch.cat((token_ids, topk_indices), dim=1)
         logprobs = torch.cat((token_logprobs, topk_logprobs), dim=1)
@@ -250,6 +274,8 @@ class Sampler(nn.Module):
 
         return LogprobsTensors(indices, logprobs, token_ranks)
 
+    # 已阅
+    # 说明：将 output_token_ids 和 spec_token_ids 结合起来
     @staticmethod
     def _combine_outputs_with_spec_tokens(
         output_token_ids: list[list[int]],
@@ -263,12 +289,16 @@ class Sampler(nn.Module):
             for out, spec in zip(output_token_ids, spec_token_ids)
         ]
 
+    # 已阅
     def apply_logits_processors(
         self,
         logits: torch.Tensor,
         sampling_metadata: SamplingMetadata,
         predict_bonus_token: bool,
     ) -> torch.Tensor:
+        # 说明：请求索引 -> 列表，元素是“不能完整生成的 token ids 列表”，
+        # 即每个坏词（一系列 token ids）前面部分的 token ids 可以正常生成，
+        # 直到列表中的最后一个不能出现
         bad_words_token_ids = sampling_metadata.bad_words_token_ids
         any_penalties_or_bad_words = (
             bool(bad_words_token_ids) or not sampling_metadata.no_penalties
@@ -285,6 +315,7 @@ class Sampler(nn.Module):
 
         # Apply allowed token ids.
         if sampling_metadata.allowed_token_ids_mask is not None:
+            # 说明：将不在 allowed_token_ids 里的 token 的 logits 设置为 -inf
             logits.masked_fill_(sampling_metadata.allowed_token_ids_mask, float("-inf"))
 
         # Apply bad words exclusion.
@@ -299,6 +330,7 @@ class Sampler(nn.Module):
         logits = self.apply_penalties(logits, sampling_metadata, output_token_ids)
         return logits
 
+    # 已阅
     @staticmethod
     def apply_penalties(
         logits: torch.Tensor,

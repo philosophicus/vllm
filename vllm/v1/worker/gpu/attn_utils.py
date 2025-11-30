@@ -31,6 +31,8 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
     return kv_cache_spec
 
 
+# 已阅
+# 说明：返回 layer 与 backend 类型的映射关系，以及与 group 相对应的 attn metadata builder 列表
 def init_attn_backend(
     kv_cache_config: KVCacheConfig, vllm_config: VllmConfig, device: torch.device
 ):
@@ -52,6 +54,7 @@ def init_attn_backend(
         )
         attn_metadata_builders.append(attn_metadata_builder)  # type: ignore
 
+        # 说明：没有 workspace 时就创建，创建后所有 backend 共享同一个 workspace
         if attn_backend.get_name() == "FLASHINFER":
             if flashinfer_workspace is None:
                 flashinfer_workspace = attn_metadata_builder._get_workspace_buffer()
@@ -60,6 +63,9 @@ def init_attn_backend(
     return attn_backends, attn_metadata_builders
 
 
+# 已阅
+# 说明：根据 kv_cache_tensors 分配 KV cache tensors，
+# shared_by 中的 layers 共享同一个 tensor
 def _allocate_kv_cache(kv_cache_config: KVCacheConfig, device: torch.device):
     kv_cache_raw_tensors: dict[str, torch.Tensor] = {}
     for kv_cache_tensor in kv_cache_config.kv_cache_tensors:
@@ -77,6 +83,7 @@ def _allocate_kv_cache(kv_cache_config: KVCacheConfig, device: torch.device):
     return kv_cache_raw_tensors
 
 
+# 已阅
 def _reshape_kv_cache(
     kv_cache_config: KVCacheConfig,
     kv_cache_raw_tensors: dict[str, torch.Tensor],
@@ -119,6 +126,7 @@ def _reshape_kv_cache(
     return kv_caches
 
 
+# 已阅
 def init_kv_cache(
     runner_kv_caches: list[torch.Tensor],
     forward_context: dict[str, Any],
@@ -143,6 +151,8 @@ def build_slot_mappings_by_layer(
     return slot_mappings_by_layer
 
 
+# 已阅
+# 说明：返回每个 layer 对应的 AttentionMetadataBuilder
 def build_attn_metadata(
     attn_metadata_builders: list[AttentionMetadataBuilder],
     num_reqs: int,
@@ -160,6 +170,7 @@ def build_attn_metadata(
 
     attn_metadata: dict[str, Any] = {}
     kv_cache_groups = kv_cache_config.kv_cache_groups
+    # 说明：每个 kv cache group 对应一个 attn metadata builder
     for i, kv_cache_spec in enumerate(kv_cache_groups):
         block_table = block_tables[i]
         slot_mapping = slot_mappings[i]
@@ -179,6 +190,7 @@ def build_attn_metadata(
 
         attn_metadata_builder = attn_metadata_builders[i]
         metadata = attn_metadata_builder.build(
+            # 问题：这里的 common_prefix_len 为什么总是 0 呢？
             common_prefix_len=0, common_attn_metadata=common_attn_metadata
         )
         for layer_name in kv_cache_spec.layer_names:

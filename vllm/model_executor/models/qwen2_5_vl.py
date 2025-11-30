@@ -1341,7 +1341,9 @@ class Qwen2_5_VLForConditionalGeneration(
 
     def recompute_mrope_positions(
         self,
+        # 说明：prompt_token_ids
         input_ids: list[int],
+        # 说明：由多模态 encoder_output 组成的列表
         multimodal_embeddings: tuple[torch.Tensor, ...],
         mrope_positions: torch.LongTensor,
         num_computed_tokens: int,
@@ -1379,7 +1381,9 @@ class Qwen2_5_VLForConditionalGeneration(
         # Tensors
         input_ids_t = torch.as_tensor(input_ids, device=device, dtype=torch.long)
 
+        # 说明：最后 4 个维度是 computed mrope positions，参考 compute_mrope_for_media 函数
         mm_embeddings_out = [mm[:, :-4] for mm in multimodal_embeddings]
+        # 说明：shape 为 [4, N]
         mm_embeddings_pos = [
             mm[:, -4:].permute(1, 0).long() for mm in multimodal_embeddings
         ]

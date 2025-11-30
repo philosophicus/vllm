@@ -632,6 +632,7 @@ def set_on_compilation_complete(
         _on_compilation_complete_callback.reset(token)
 
 
+# 已阅
 @contextmanager
 def set_model_tag(tag: str, is_encoder: bool = False) -> Generator[None, None, None]:
     """Context manager to set the model tag."""

@@ -102,6 +102,7 @@ class ConstantList(Generic[T], Sequence):
         return self._x.copy()
 
 
+# 已阅
 class CpuGpuBuffer:
     """Buffer to easily copy tensors between CPU and GPU."""
 
@@ -319,6 +320,7 @@ def shutdown(procs: list[BaseProcess]):
             kill_process_tree(pid)
 
 
+# 已阅
 def copy_slice(
     from_tensor: torch.Tensor, to_tensor: torch.Tensor, length: int
 ) -> torch.Tensor:

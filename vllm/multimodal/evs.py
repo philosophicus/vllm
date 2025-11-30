@@ -13,6 +13,8 @@ import typing
 import torch
 
 
+# 已阅
+# 说明：至少保留第一帧的所有 token
 def compute_retained_tokens_count(
     tokens_per_frame: int, num_frames: int, q: float
 ) -> int:
@@ -35,6 +37,7 @@ def compute_retained_tokens_count(
     return max(min_num_tokens, evs_num_tokens)
 
 
+# 说明：EVS 指 Efficient Video Sampling
 def compute_retention_mask(
     video_embeds: torch.Tensor,
     video_size_thw: torch.LongTensor | tuple[int, int, int],
@@ -59,6 +62,9 @@ def compute_retention_mask(
     T, H, W = map(int, video_size_thw)
 
     # Use reshape instead of einops to avoid graph breaks
+    # 关注：einops 的语法糖在底层可能引入 PyTorch 追踪计算图时无法识别的操作，
+    # 导致计算图不连续，进而影响模型导出、编译优化或梯度回传
+    # graph breaks 指 PyTorch Autograd/JIT 无法识别的「断点」
     video_embeds = video_embeds.reshape(
         T,
         H // spatial_merge_size,
@@ -67,21 +73,26 @@ def compute_retention_mask(
     )
     tokens_per_frame = (H // spatial_merge_size) * (W // spatial_merge_size)
     # Core EVS
+    # 说明：计算相邻帧之间的余弦相似度，shape 为 (T-1, H // spatial_merge_size, W // spatial_merge_size)
     similarity = torch.nn.functional.cosine_similarity(
         video_embeds[1:, ...], video_embeds[:-1, ...], dim=-1
     )
     dissimilarity = 1 - similarity
 
     # Always ensure we include all tokens from the first frame
+    # 说明：第一帧的 dissimilarity 全部设为最大值 255
+    # 说明：dissimilarity 的 shape 为 (T, H // spatial_merge_size, W // spatial_merge_size, 0)
     dissimilarity = torch.cat(
         [255 * torch.ones_like(video_embeds[:1, :, :, 0]), dissimilarity], dim=0
     )
 
     dissimilarity_flat = dissimilarity.view(-1)
+    # 说明：对 flatten 后的 dissimilarity 进行降序排列，返回位置索引
     order = torch.argsort(dissimilarity_flat, dim=-1, descending=True, stable=True)
     retain_num_tokens = compute_retained_tokens_count(
         tokens_per_frame=tokens_per_frame, num_frames=T, q=q
     )
+    # 说明：第一帧的所有 token 都会被保留，因为它们的 dissimilarity 都是最大的 255
     topk_indices = order[:retain_num_tokens]
 
     retention_mask = torch.zeros_like(dissimilarity_flat, dtype=torch.bool)
@@ -92,6 +103,7 @@ def compute_retention_mask(
     return mask
 
 
+# 已阅
 def compute_mrope_for_media(
     video_size_thw: torch.LongTensor,
     spatial_merge_size: int,
@@ -118,6 +130,11 @@ def compute_mrope_for_media(
     llm_grid_h = video_size_thw[1] // spatial_merge_size
     llm_grid_w = video_size_thw[2] // spatial_merge_size
 
+    # 例子：t = 2, h = 3, w = 4, tokens_per_second = 1.0, video_second_per_grid = 1.0
+    # t_index = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    # h_index = [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2]
+    # w_index = [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]
+    # llm_grid_w = [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4]
     t_index = (
         (
             torch.arange(llm_grid_t)
@@ -151,6 +168,8 @@ def compute_mrope_for_media(
     return positions
 
 
+# 说明：返回的 mrope_position_delta 可以理解为 M-RoPE 的 position id 空间比真实 token 序列长度多出来的值，
+# 可以用于计算后续新 token 的 position id
 def recompute_mrope_positions(
     input_ids: torch.LongTensor,
     multimodal_positions: list[torch.Tensor],
@@ -196,6 +215,7 @@ def recompute_mrope_positions(
         Tuple of (mrope_positions, mrope_position_delta).
     """
 
+    # 说明：positions 实际传入的参数是 (4, N)
     # Tensors
     positions: torch.LongTensor = typing.cast(
         torch.LongTensor, mrope_positions.clone()
@@ -213,6 +233,8 @@ def recompute_mrope_positions(
         return positions, delta
 
     total_mm_tokens = torch.count_nonzero(media_mask)
+    # 说明：在 num_computed_tokens 位置之前，已经看到的多模态 token 数量
+    # 问题：seen_mm_tokens 为什么一直没有变化？
     seen_mm_tokens = torch.count_nonzero(media_mask[:num_computed_tokens])
 
     # Early exit: we've updated positions for all media tokens
@@ -243,14 +265,20 @@ def recompute_mrope_positions(
             # | --- prefill 1 ------| ---- prefill 2 ----- |
             # | TTTTTTTTTSVVVVVVVVVV|VVVVVVTTTTTTTTTTTTTTTT|
             last_vision_start_token = seen_vision_start_indices[-1]
+            # 说明：在 last_vision_start_token 位置之前，已经看到的多模态 token 数量
             seem_mm_tokens_before_last_vision_start = torch.count_nonzero(
                 media_mask[:last_vision_start_token]
             )
+            # 问题：seen_mm_tokens 一直没有变化，而 seem_mm_tokens_before_last_vision_start 是
+            # 可能随着 num_computed_tokens 增加而增加的，所以这里 in_the_middle_of_media 的值
+            # 是不是在绝大部分情况都是 False？
             in_the_middle_of_media = (
                 seen_mm_tokens > seem_mm_tokens_before_last_vision_start
             )
 
             if in_the_middle_of_media:
+                # 说明：从 last_vision_start_token 位置开始到 num_computed_tokens 位置之间，
+                # 已经看到的多模态 token 数量
                 mm_embeddings_seen = (
                     seen_mm_tokens - seem_mm_tokens_before_last_vision_start
                 )
@@ -274,19 +302,33 @@ def recompute_mrope_positions(
             mm_embeddings_seen = 0
             global_mm_start = next_vision_start_token
 
+        # 说明：positions 的第 4 个通道用于计算 base，让 positions 里的最小值比 positions[-1, global_mm_start] 大一
+        # 说明：positions 初始时，最后一个维度的值都是 W 维度的 size；positions 的值在每轮循环结束前有更新
         # Offset right after vision_start_token
         base = positions[-1, global_mm_start] + 1
+        # 说明：mm_embeddings_seen 是从 global_mm_start 位置开始已经看到的多模态 token 数量
+        # 说明：global_mm_start + 1 是跳过 vision_start_token 位置
         local_start = global_mm_start + 1 + mm_embeddings_seen
+        # 说明：mm_pos.shape[1] 是当前多模态嵌入的 token 数量
         local_end = local_start + mm_pos.shape[1]
+        # 说明：t, h, w 所有维度的值都加上 base 偏移量
         positions[:, local_start:local_end] = mm_pos[0:3] + base
 
+        # 说明：第 4 个通道用于计算 offset
         # mm_pos[3, 0] is the max width of the media
         offset = mm_pos[3, 0] + base
 
         text_pos_sum = torch.cumsum(text_mask[local_end:].long(), dim=0)
 
+        # 说明：shifts all text tokens that goes after total_len_of_multimodal_embeddings
+        # 问题：offset 为什么减一？
+        # 理解：text tokens 的位置是紧跟在多模态嵌入的后面的，数值应该是从 offset 开始的，
+        # 第一个 text token 的 cumsum 是 1，所以要减一，结果才是 offset
+        # 问题：用宽度计算的 offset 应用在了所有维度上，T 和 H 维度上会不会出现不递增的情况
         positions[:, local_end:N] = text_pos_sum + offset - 1
 
+        # 说明：mm_pos.shape[1] 是当前多模态嵌入的 token 数量，表示 distance to the next vision start token；
+        # 这说明 mm_pos 之间是连续的，没有间隔的 text token 
         # Include distance to the next vision start token
         num_computed_tokens += mm_pos.shape[1]
 

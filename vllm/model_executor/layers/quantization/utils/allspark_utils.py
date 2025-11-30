@@ -12,6 +12,7 @@ ALLSPARK_AMPERE_N_ALIGN = 16
 ALLSPARK_AMPERE_K_ALIGN = 16
 
 
+# 已阅
 def check_allspark_supported_dtype_shape(
     input_size_per_partition: int,
     output_size_per_partition: int,

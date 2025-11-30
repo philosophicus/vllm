@@ -104,6 +104,7 @@ class SpeculativeConfig:
     disable_by_batch_size: int | None = Field(default=None, ge=2)
     """Disable speculative decoding for new incoming requests when the number
     of enqueued requests is larger than this value, if provided."""
+    # 说明：控制是否将不同长度的序列 pad 为等长序列，默认为 False 表示开启 pad 
     disable_padded_drafter_batch: bool = False
     """Disable input padding for speculative decoding. If set to True,
     speculative input batches can contain sequences of different lengths,
@@ -151,6 +152,7 @@ class SpeculativeConfig:
     suffix tree is disabled and past responses are not cached (prompt trees
     are still used)."""
 
+    # 说明：默认值 1.0，表示前缀匹配长度的 1 倍
     suffix_decoding_max_spec_factor: float = 1.0
     """The maximum spec factor for suffix decoding. The spec factor controls
     speculation lengths based on the prefix match length: max_spec_tokens =
@@ -505,11 +507,13 @@ class SpeculativeConfig:
                         )
 
                 if self.speculative_token_tree is None:
+                    # 说明：[(0), (0, 0), (0, 0, 0), ...]
                     # Generate chain of tokens.
                     self.speculative_token_tree = str(
                         [(i + 1) * (0,) for i in range(self.num_speculative_tokens)]
                     )
                 else:
+                    # 说明：[(0), (1), (0, 0), (0, 1), (1, 0), (1, 1), ...]
                     # Sort the token tree breadth-first.
                     tree_choices = ast.literal_eval(self.speculative_token_tree)
                     self.speculative_token_tree = str(

@@ -103,6 +103,7 @@ def import_from_path(module_name: str, file_path: str | os.PathLike):
     return module
 
 
+# 已阅
 def resolve_obj_by_qualname(qualname: str) -> Any:
     """
     Resolve an object by its fully-qualified class name.
@@ -112,6 +113,8 @@ def resolve_obj_by_qualname(qualname: str) -> Any:
     return getattr(module, obj_name)
 
 
+# 已阅
+# 说明：返回一个字典，key 是 extra（额外功能）名称，value 是包含该 extra（额外功能）的、vllm 项目依赖的包名称列表
 @cache
 def get_vllm_optional_dependencies():
     metadata = importlib.metadata.metadata("vllm")
@@ -284,6 +287,7 @@ class _PlaceholderBase:
         return self.__getattr__("__exit__")
 
 
+# 已阅
 class PlaceholderModule(_PlaceholderBase):
     """
     A placeholder object to use when a module does not exist.
@@ -391,6 +395,7 @@ class LazyLoader(ModuleType):
         return dir(self._module)
 
 
+# 已阅
 # Optional dependency detection utilities
 @cache
 def _has_module(module_name: str) -> bool:
@@ -402,21 +407,33 @@ def _has_module(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
 
 
+# 已阅
+# 说明：https://github.com/vllm-project/vllm/blob/main/tools/ep_kernels/README.md
+# 源码 & 安装方式：https://github.com/ppl-ai/pplx-kernels
 def has_pplx() -> bool:
     """Whether the optional `pplx_kernels` package is available."""
     return _has_module("pplx_kernels")
 
 
+# 已阅
+# 说明：https://github.com/vllm-project/vllm/blob/main/tools/ep_kernels/README.md
+# 源码 & 安装方式：https://github.com/deepseek-ai/DeepEP
 def has_deep_ep() -> bool:
     """Whether the optional `deep_ep` package is available."""
     return _has_module("deep_ep")
 
 
+# 已阅
+# 源码：https://github.com/deepseek-ai/DeepGEMM
+# 安装方式：install_deepgemm.sh
 def has_deep_gemm() -> bool:
     """Whether the optional `deep_gemm` package is available."""
     return _has_module("deep_gemm")
 
 
+# 已阅
+# 源码：https://github.com/triton-lang/triton/tree/main/python/triton_kernels
+# 安装方式：triton_kernels.cmake
 def has_triton_kernels() -> bool:
     """Whether the optional `triton_kernels` package is available."""
     is_available = _has_module("triton_kernels") or _has_module(
@@ -427,6 +444,7 @@ def has_triton_kernels() -> bool:
     return is_available
 
 
+# 说明：无调用
 def has_tilelang() -> bool:
     """Whether the optional `tilelang` package is available."""
     return _has_module("tilelang")

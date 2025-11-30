@@ -283,6 +283,7 @@ class AttentionMetadata:
 T = TypeVar("T", bound=AttentionMetadata)
 
 
+# 说明：关注类的 docstring
 @dataclass
 class CommonAttentionMetadata:
     """
@@ -310,6 +311,7 @@ class CommonAttentionMetadata:
     """Longest context length (may be an upper bound)"""
 
     block_table_tensor: torch.Tensor
+    # 说明：每个 token 对应的 slot
     slot_mapping: torch.Tensor
 
     causal: bool = True
@@ -413,6 +415,7 @@ class CommonAttentionMetadata:
 M = TypeVar("M")
 
 
+# 已阅
 class AttentionCGSupport(Enum):
     """Constants for the cudagraph support of the attention backend
     Here we do not consider the cascade attention, as currently
@@ -496,6 +499,7 @@ class AttentionMetadataBuilder(ABC, Generic[M]):
         ):
             self.reorder_batch_threshold = 1
 
+    # 说明：核心方法，根据 CommonAttentionMetadata 构建具体的 AttentionMetadata
     @abstractmethod
     def build(
         self,
@@ -624,6 +628,7 @@ class AttentionImplBase(ABC, Generic[T]):
 
     # some attention backends might not always want to return lse
     # even if they can return lse (for efficiency reasons)
+    # 说明：lse = LogSumExp
     need_to_return_lse_for_decode: bool = False
 
     # Whether this attention implementation supports pre-quantized query input.

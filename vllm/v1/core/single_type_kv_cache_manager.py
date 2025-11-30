@@ -74,6 +74,9 @@ class SingleTypeKVCacheManager(ABC):
     def _get_num_evictable_blocks(cls, blocks: Sequence[KVCacheBlock]):
         return sum(blk.ref_cnt == 0 and not blk.is_null for blk in blocks)
 
+    # 已阅
+    # 补充：new_computed_blocks 刚计算完，没有保存到 coordinator 中
+    # new_computed_blocks 可能包含在 free queue 中的 block
     def get_num_blocks_to_allocate(
         self,
         request_id: str,
@@ -138,6 +141,8 @@ class SingleTypeKVCacheManager(ABC):
         )
         return num_new_blocks + num_evictable_blocks
 
+    # 已阅，待看
+    # 补充：只有新 request (非 running) 才会有 new_computed_blocks，才支持保存
     def allocate_new_computed_blocks(
         self,
         request_id: str,
@@ -209,6 +214,7 @@ class SingleTypeKVCacheManager(ABC):
             )
             req_blocks.extend(allocated_blocks)
 
+    # 已阅
     def allocate_new_blocks(
         self, request_id: str, num_tokens: int, num_tokens_main_model: int
     ) -> list[KVCacheBlock]:
@@ -236,6 +242,7 @@ class SingleTypeKVCacheManager(ABC):
             req_blocks.extend(new_blocks)
             return new_blocks
 
+    # 已阅
     def cache_blocks(self, request: Request, num_tokens: int) -> None:
         """
         Cache the blocks for the request.
@@ -344,6 +351,7 @@ class SingleTypeKVCacheManager(ABC):
 
         raise NotImplementedError
 
+    # 已阅
     def remove_skipped_blocks(
         self, request_id: str, total_computed_tokens: int
     ) -> None:
@@ -377,6 +385,10 @@ class SingleTypeKVCacheManager(ABC):
         removed_blocks: list[KVCacheBlock] = []
         # Because the block starts from index 0, the num_skipped_block-th block
         # corresponds to index num_skipped_blocks - 1.
+        # 补充：The freed blocks are added to the tail of the free queue in the 
+        # reverse order. This is because the last block of a request must hash 
+        # more tokens and is less likely to be reused by other requests. 
+        # As a result, it should be evicted first.
         for i in range(num_skipped_blocks - 1, -1, -1):
             if blocks[i] == self._null_block:
                 # If the block is already a null block, the blocks before it
@@ -406,6 +418,7 @@ class SingleTypeKVCacheManager(ABC):
 
 
 class FullAttentionManager(SingleTypeKVCacheManager):
+    # 已阅
     @classmethod
     def find_longest_cache_hit(
         cls,
@@ -443,6 +456,8 @@ class FullAttentionManager(SingleTypeKVCacheManager):
                     computed.append(cached)
             else:
                 break
+        # 补充：If eagle is enabled, drop the last matched block to force recompute the
+        # last block to get the required hidden states for eagle drafting head.
         if use_eagle and computed_blocks[0]:
             # Need to drop the last matched block if eagle is enabled.
             for computed in computed_blocks:
@@ -561,6 +576,7 @@ class SlidingWindowManager(SingleTypeKVCacheManager):
                 computed.pop()
         return computed_blocks
 
+    # 已阅
     def get_num_skipped_tokens(self, num_computed_tokens: int) -> int:
         """
         Get the number of tokens that will be skipped for attention computation.
@@ -696,6 +712,7 @@ class ChunkedLocalAttentionManager(SingleTypeKVCacheManager):
                 break
         return computed_blocks
 
+    # 已阅
     def get_num_skipped_tokens(self, num_computed_tokens: int) -> int:
         """
         Get the number of tokens that will be skipped for attention computation.
@@ -1080,6 +1097,7 @@ class SinkFullAttentionManager(FullAttentionManager):
         self.sink_blocks = self.block_pool.free_block_queue.popleft_n(num_sink_block)
 
 
+# 已阅
 spec_manager_map: dict[type[KVCacheSpec], type[SingleTypeKVCacheManager]] = {
     FullAttentionSpec: FullAttentionManager,
     MLAAttentionSpec: FullAttentionManager,
@@ -1091,6 +1109,7 @@ spec_manager_map: dict[type[KVCacheSpec], type[SingleTypeKVCacheManager]] = {
 }
 
 
+# 已阅
 def get_manager_for_kv_cache_spec(
     kv_cache_spec: KVCacheSpec, **kwargs
 ) -> SingleTypeKVCacheManager:

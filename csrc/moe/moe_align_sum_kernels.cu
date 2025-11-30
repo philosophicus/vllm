@@ -346,12 +346,15 @@ __global__ void count_and_sort_expert_tokens_kernel(
       max_num_tokens_padded, nullptr, 0, topk_num, has_expert_map);
 }
 
+// 已阅
+// 说明：一个 block 处理一个 token 的所有 topk 向量求和
 template <typename scalar_t, int TOPK>
 __global__ void moe_sum_kernel(
     scalar_t* __restrict__ out,          // [..., d]
     const scalar_t* __restrict__ input,  // [..., topk, d]
     const int d) {
   const int64_t token_idx = blockIdx.x;
+  // 说明：一个 thread 处理输出向量的一个维度
   for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
     scalar_t x = 0.0;
 #pragma unroll
@@ -483,6 +486,7 @@ void moe_align_block_size(torch::Tensor topk_ids, int64_t num_experts,
 
   int64_t padded_num_experts =
       ((num_experts + WARP_SIZE - 1) / WARP_SIZE) * WARP_SIZE;
+  // 说明：每个线程处理一个 expert
   int experts_per_warp = WARP_SIZE;
   int threads = 1024;
   threads = ((threads + WARP_SIZE - 1) / WARP_SIZE) * WARP_SIZE;
@@ -595,6 +599,8 @@ void batched_moe_align_block_size(int64_t max_tokens_per_batch,
       num_tokens_post_pad.data_ptr<int32_t>());
 }
 
+// 已阅
+// 说明：对 input 张量在维度 1 上进行求和操作，并将结果存储在 output 张量中
 void moe_sum(torch::Tensor& input,   // [num_tokens, topk, hidden_size]
              torch::Tensor& output)  // [num_tokens, hidden_size]
 {

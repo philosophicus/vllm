@@ -8,6 +8,7 @@ from vllm.triton_utils import triton
 from vllm.utils.math_utils import round_up
 
 
+# 说明：返回值中的 sorted_token_ids 是 token 的索引列表，不是 token_id
 def moe_align_block_size(
     topk_ids: torch.Tensor,
     block_size: int,
@@ -71,10 +72,13 @@ def moe_align_block_size(
     - The padding ensures that the total number of tokens is now divisible
         by block_size for proper block matrix operations.
     """
+    # 说明：当前 token 数量 + 每个 expert 补齐到 block_size 所需的 padding 数量
+    # 当前 token 数量对每个 token 重复计算 top_k 次；每个 expert 最多补齐 block_size - 1 个 token
     max_num_tokens_padded = topk_ids.numel() + num_experts * (block_size - 1)
     if pad_sorted_ids:
         max_num_tokens_padded = round_up(max_num_tokens_padded, block_size)
     if topk_ids.numel() < num_experts:
+        # 说明：有专家分不到 token，此时元素数量 * block_size，一定能保证 pad 后元素数量是 block_size 的整数倍
         max_num_tokens_padded = min(
             topk_ids.numel() * block_size, max_num_tokens_padded
         )
@@ -82,6 +86,7 @@ def moe_align_block_size(
         (max_num_tokens_padded,), dtype=torch.int32, device=topk_ids.device
     )
     max_num_m_blocks = triton.cdiv(max_num_tokens_padded, block_size)
+    # 说明：每个 block 对应一个 expert
     expert_ids = torch.empty(
         (max_num_m_blocks,), dtype=torch.int32, device=topk_ids.device
     )

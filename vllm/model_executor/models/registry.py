@@ -657,6 +657,7 @@ class _ModelInfo:
         )
 
 
+# 已阅
 class _BaseRegisteredModel(ABC):
     @abstractmethod
     def inspect_model_cls(self) -> _ModelInfo:
@@ -667,6 +668,7 @@ class _BaseRegisteredModel(ABC):
         raise NotImplementedError
 
 
+# 已阅
 @dataclass(frozen=True)
 class _RegisteredModel(_BaseRegisteredModel):
     """
@@ -690,12 +692,14 @@ class _RegisteredModel(_BaseRegisteredModel):
         return self.model_cls
 
 
+# 已阅
 @dataclass(frozen=True)
 class _LazyRegisteredModel(_BaseRegisteredModel):
     """
     Represents a model that has not been imported in the main process.
     """
 
+    # 说明：格式如 vllm.model_executor.models.qwen3_vl
     module_name: str
     class_name: str
 
@@ -758,11 +762,13 @@ class _LazyRegisteredModel(_BaseRegisteredModel):
 
     @logtime(logger=logger, msg="Registry inspect model class")
     def inspect_model_cls(self) -> _ModelInfo:
+        # 说明：models 目录下的模型文件
         model_path = Path(__file__).parent / f"{self.module_name.split('.')[-1]}.py"
         module_hash = None
 
         if model_path.exists():
             with open(model_path, "rb") as f:
+                # 说明：使用文件内容计算哈希值
                 module_hash = safe_hash(f.read(), usedforsecurity=False).hexdigest()
 
             mi = self._load_modelinfo_from_cache(module_hash)
@@ -929,6 +935,8 @@ class _ModelRegistry:
             getattr(model_config.hf_config, "auto_map", None) or dict()
         )
 
+        # 说明：https://huggingface.co/docs/transformers/main/en/custom_models
+        # 中有关于 auto_map 的说明。
         # Make sure that config class is always initialized before model class,
         # otherwise the model class won't be able to access the config class,
         # the expected auto_map should have correct order like:

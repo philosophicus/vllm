@@ -68,6 +68,7 @@ enum ScoringFunc {
   SCORING_SIGMOID = 1  // apply sigmoid
 };
 
+// 已阅
 // ====================== Softmax things ===============================
 // We have our own implementation of softmax here so we can support transposing the output
 // in the softmax kernel when we extend this module to support expert-choice routing.
@@ -81,19 +82,23 @@ __launch_bounds__(TPB) __global__
     __shared__ float normalizing_factor;
     __shared__ float float_max;
 
+    // 说明：行 index * 列数
     const int thread_row_offset = blockIdx.x * num_cols;
 
     float threadData(-FLT_MAX);
 
     // Don't touch finished rows.
+    // 说明：实际传入的 finished 变量是 nullptr
     if ((finished != nullptr) && finished[blockIdx.x])
     {
         return;
     }
 
+    // 说明：每个线程处理多列，间隔为 TPB
     for (int ii = threadIdx.x; ii < num_cols; ii += TPB)
     {
         const int idx = thread_row_offset + ii;
+        // 说明：input 传入的是指针，指向输入张量的起始位置
         const float val = toFloat(input[idx]);
         threadData = max(val, threadData);
     }
@@ -103,6 +108,7 @@ __launch_bounds__(TPB) __global__
     {
         float_max = maxElem;
     }
+    // 说明：确保所有线程都能看到 float_max 的值
     __syncthreads();
 
     threadData = 0;
@@ -111,6 +117,7 @@ __launch_bounds__(TPB) __global__
     {
         const int idx = thread_row_offset + ii;
         const float val = toFloat(input[idx]);
+        // 说明：计算 exp(val - max)
         threadData += expf(val - float_max);
     }
 
@@ -152,6 +159,7 @@ __launch_bounds__(TPB) __global__
     }
 }
 
+// 已阅
 template <int TPB, typename IndType>
 __launch_bounds__(TPB) __global__ void moeTopK(
     const float* inputs_after_softmax,
@@ -177,15 +185,19 @@ __launch_bounds__(TPB) __global__ void moeTopK(
     const int num_rows = gridDim.x;
     const int block_row = blockIdx.x;
 
+    // 说明：finished 实际传入的变量是 nullptr
     const bool row_is_active = finished ? !finished[block_row] : true;
     const int thread_read_offset = blockIdx.x * num_experts;
     float selected_sum = 0.f;
+    // 说明：下面选择 topk 的逻辑是 3 层循环，而不是排序
+    // 说明：遍历 k 个 topk 位置
     for (int k_idx = 0; k_idx < k; ++k_idx)
     {
         thread_kvp.key = 0;
         thread_kvp.value = -1.f; // This is OK because inputs are probabilities
 
         cub_kvp inp_kvp;
+        // 说明：每个线程遍历部分专家，线程和线程之间遍历的专家不重复
         for (int expert = threadIdx.x; expert < num_experts; expert += TPB)
         {
             const int idx = thread_read_offset + expert;
@@ -198,10 +210,15 @@ __launch_bounds__(TPB) __global__ void moeTopK(
               inp_kvp.value = inputs_after_softmax[idx];
             }
 
+            // 说明：遍历当前 k 前面的 k_idx 个位置 
             for (int prior_k = 0; prior_k < k_idx; ++prior_k)
             {
+                // 说明：indices 的 shape 是 (num_tokens, topk)
                 const int prior_winning_expert = indices[k * block_row + prior_k];
 
+                // 说明：如果当前专家已经在前面的 k_idx 个位置中被选中，
+                // 则将 inp_kvp 设置为 thread_kvp，即后面不会改变 thread_kvp 的值，
+                // 通过这种方式忽略当前专家
                 if (prior_winning_expert == expert)
                 {
                     inp_kvp = thread_kvp;
@@ -211,11 +228,14 @@ __launch_bounds__(TPB) __global__ void moeTopK(
             thread_kvp = arg_max(inp_kvp, thread_kvp);
         }
 
+        // 说明：每个 topk 位置做一次归约，得到当前 topk 位置的最大值和对应的专家索引
         const cub_kvp result_kvp = BlockReduce(tmpStorage).Reduce(thread_kvp, arg_max);
         if (threadIdx.x == 0)
         {
             // Ignore experts the node isn't responsible for with expert parallelism
             const int expert = result_kvp.key;
+            // 说明：判断当前专家是否在该节点负责的专家范围内，
+            // 实际传入的 start_expert 是 0，end_expert 是 num_experts
             const bool node_uses_expert = expert >= start_expert && expert < end_expert;
             const bool should_process_row = row_is_active && node_uses_expert;
 
@@ -224,6 +244,8 @@ __launch_bounds__(TPB) __global__ void moeTopK(
             output[idx] = inputs_after_softmax[thread_read_offset + expert];
             indices[idx] = should_process_row ? (expert - start_expert) : num_experts;
             assert(indices[idx] >= 0);
+            // 说明：source_rows 的 shape 是 (num_tokens, topk)，存的值是列优先的索引
+            // 问题：为什么要这样存储？
             source_rows[idx] = k_idx * num_rows + block_row;
             if (renormalize) {
                 selected_sum += inputs_after_softmax[thread_read_offset + expert];
@@ -260,6 +282,7 @@ __launch_bounds__(TPB) __global__ void moeTopK(
   2) This implementation assumes k is small, but will work for any k.
 */
 
+// 已阅
 template <int VPT, int NUM_EXPERTS, int WARPS_PER_CTA, int BYTES_PER_LDG, int WARP_SIZE_PARAM, typename IndType,
           typename InputType = float, ScoringFunc SF>
 __launch_bounds__(WARPS_PER_CTA* WARP_SIZE_PARAM) __global__
@@ -276,9 +299,12 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE_PARAM) __global__
     static_assert(BYTES_PER_LDG <= 16, "BYTES_PER_LDG must be leq 16");
 
     // Number of bytes each thread pulls in per load
+    // 说明：每次 load 加载的元素（专家）个数，ELTS = elements
     static constexpr int ELTS_PER_LDG = BYTES_PER_LDG / sizeof(InputType);
     static constexpr int ELTS_PER_ROW = NUM_EXPERTS;
+    // 说明：每行需要的线程数，其中 VPT = 每个线程处理的元素（专家）个数
     static constexpr int THREADS_PER_ROW = ELTS_PER_ROW / VPT;
+    // 说明：每个线程需要 load 的次数
     static constexpr int LDG_PER_THREAD = VPT / ELTS_PER_LDG;
 
     if constexpr (std::is_same_v<InputType, __nv_bfloat16> || std::is_same_v<InputType, __half>) {
@@ -290,11 +316,14 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE_PARAM) __global__
     static_assert(VPT % ELTS_PER_LDG == 0, "The elements per thread must be a multiple of the elements per ldg");
     static_assert(WARP_SIZE_PARAM % THREADS_PER_ROW == 0, "The threads per row must cleanly divide the threads per warp");
     static_assert(THREADS_PER_ROW == (THREADS_PER_ROW & -THREADS_PER_ROW), "THREADS_PER_ROW must be power of 2");
+    // 说明：行线程数不能超过 warp size，即行不能跨 warp 处理
     static_assert(THREADS_PER_ROW <= WARP_SIZE_PARAM, "THREADS_PER_ROW can be at most warp size");
 
     // We have NUM_EXPERTS elements per row. We specialize for small #experts
     static constexpr int ELTS_PER_WARP = WARP_SIZE_PARAM * VPT;
     static constexpr int ROWS_PER_WARP = ELTS_PER_WARP / ELTS_PER_ROW;
+    // 说明：CTA = Cooperative Thread Array，即线程块
+    // 说明：每个线程块处理的行数
     static constexpr int ROWS_PER_CTA = WARPS_PER_CTA * ROWS_PER_WARP;
 
     // Restrictions for previous section.
@@ -326,7 +355,16 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE_PARAM) __global__
     const InputType* thread_row_ptr = input + thread_row * ELTS_PER_ROW;
 
     // Now, we compute the group each thread belong to in order to determine the first column to start loads.
+    // 说明：计算线程在行内的 index，也是线程组内的 index
     const int thread_group_idx = threadIdx.x % THREADS_PER_ROW;
+    // 理解：每个线程组交替 load 数据，所以同一行每个线程组的第一个元素索引相差 ELTS_PER_LDG，
+    // 元素间隔为 ELTS_PER_LDG * THREADS_PER_ROW
+    // 说明：交替 load 指 (Thread 0, Thread 1, ..., Thread N), (Thread 0, Thread 1, ..., Thread N), ...；例如：
+    // Thread 0 Loads 0~ELTS_PER_LDG-1, 
+    // Thread 1 Loads ELTS_PER_LDG~2*ELTS_PER_LDG-1, ...
+    // Thread 0 Loads THREADS_PER_ROW*ELTS_PER_LDG~(THREADS_PER_ROW+1)*ELTS_PER_LDG-1, 
+    // Thread 1 Loads (THREADS_PER_ROW+1)*ELTS_PER_LDG~(THREADS_PER_ROW+2)*ELTS_PER_LDG-1, ...
+    // 说明：thread group 的概念指 (Thread 0, Thread 1, ..., Thread N) 是一个线程组
     const int first_elt_read_by_thread = thread_group_idx * ELTS_PER_LDG;
     const InputType* thread_read_ptr = thread_row_ptr + first_elt_read_by_thread;
 
@@ -335,24 +373,34 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE_PARAM) __global__
 
     // NOTE(zhuhaoran): dispatch different input types loading, BF16/FP16 convert to float
     if constexpr (std::is_same_v<InputType, float>) {
+        // 说明：向量化加载，类型为 float，每次加载 ELTS_PER_LDG 个元素
         using VecType = AlignedArray<float, ELTS_PER_LDG>;
         VecType* row_chunk_vec_ptr = reinterpret_cast<VecType*>(&row_chunk);
         const VecType* vec_thread_read_ptr = reinterpret_cast<const VecType*>(thread_read_ptr);
 #pragma unroll
         for (int ii = 0; ii < LDG_PER_THREAD; ++ii) {
+            // vec_thread_read_ptr 的间隔为 THREADS_PER_ROW，数据个数为 ELTS_PER_LDG，
+            // 所以总间隔为 ELTS_PER_LDG * THREADS_PER_ROW，与 first_elt_read_by_thread 的注释中描述的一致
             row_chunk_vec_ptr[ii] = vec_thread_read_ptr[ii * THREADS_PER_ROW];
         }
     } else if constexpr (std::is_same_v<InputType, __nv_bfloat16>) {
         if constexpr (ELTS_PER_LDG >= 2) {
+            // 说明：向量化加载，类型为 bfloat16，每次加载 ELTS_PER_LDG 个元素
+            // 后续的处理是将 2 个 bfloat16 转换为 float2
             using VecType = AlignedArray<__nv_bfloat16, ELTS_PER_LDG>;
+            // float2 是两个 float 组成的向量
             float2* row_chunk_f2 = reinterpret_cast<float2*>(row_chunk);
             const VecType* vec_thread_read_ptr = reinterpret_cast<const VecType*>(thread_read_ptr);
 #pragma unroll
             for (int ii = 0; ii < LDG_PER_THREAD; ++ii) {
+                // 说明：每个线程加载 LDG_PER_THREAD 次数据
                 VecType vec = vec_thread_read_ptr[ii * THREADS_PER_ROW];
+                // 说明：每次加载 ELTS_PER_LDG 个元素，一共已加载 ii 次
+                // 这里除以 2 是因为需要转换 2 个 bfloat16 为 float2
                 int base_idx_f2 = ii * ELTS_PER_LDG / 2;
 #pragma unroll
                 for (int jj = 0; jj < ELTS_PER_LDG / 2; ++jj) {
+                    // 说明：每 2 个 bfloat16 转换为 float2，一共转换 ELTS_PER_LDG / 2 次
                     row_chunk_f2[base_idx_f2 + jj] = __bfloat1622float2(
                         *reinterpret_cast<const __nv_bfloat162*>(vec.data + jj * 2)
                     );
@@ -402,6 +450,9 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE_PARAM) __global__
 #pragma unroll
       for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2)
       {
+        // 说明：VLLM_SHFL_XOR_SYNC_WIDTH 是一种 warp shuffle 操作，用于在同一 warp 内的线程之间交换数据
+        // 是对 __shfl_xor_sync 定义的宏
+        // 说明：mask 参数是异或偏移量（也有称 stride 的），控制了哪两个线程配对完成数据交换
         thread_max = max(thread_max, VLLM_SHFL_XOR_SYNC_WIDTH(thread_max, mask, THREADS_PER_ROW));
       }
 
@@ -476,9 +527,11 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE_PARAM) __global__
         float max_val = row_chunk[0];
         int expert = start_col;
 #pragma unroll
+        // 说明：遍历所有 load，找到 k_idx 位置的局部最大值和对应的专家索引
         for (int ldg = 0, col = start_col; ldg < LDG_PER_THREAD; ++ldg, col += COLS_PER_GROUP_LDG)
         {
 #pragma unroll
+            // 说明：遍历每次 load 加载的全部元素（专家）
             for (int ii = 0; ii < ELTS_PER_LDG; ++ii)
             {
                 float val_for_choice = row_chunk_for_choice[ldg * ELTS_PER_LDG + ii];
@@ -506,6 +559,7 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE_PARAM) __global__
             int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(expert, mask, THREADS_PER_ROW);
 
             // We want lower indices to "win" in every thread so we break ties this way
+            // 说明：值相等时，选择索引更小的专家
             if (other_max_for_choice > max_val_for_choice || (other_max_for_choice == max_val_for_choice && other_expert < expert))
             {
                 max_val_for_choice = other_max_for_choice;
@@ -535,7 +589,9 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE_PARAM) __global__
         // Finally, we clear the value in the thread with the current max if there is another iteration to run.
         if (k_idx + 1 < k)
         {
+            // 说明：当前最大值所属的线程组 index，即第几次 load（从 0 开始）
             const int ldg_group_for_expert = expert / COLS_PER_GROUP_LDG;
+            // 说明：当前最大值所属的线程组内的线程 index
             const int thread_to_clear_in_group = (expert / ELTS_PER_LDG) % THREADS_PER_ROW;
 
             // Only the thread in the group which produced the max will reset the "winning" value to -inf.
@@ -568,15 +624,23 @@ namespace detail
 template <int EXPERTS, int BYTES_PER_LDG, int WARP_SIZE_PARAM, typename InputType>
 struct TopkConstants
 {
+    // 说明：每次 load 加载的元素（专家）个数，ELTS = elements
     static constexpr int ELTS_PER_LDG = BYTES_PER_LDG / sizeof(InputType);
+    // 说明：CUDA 的 warp size 是 32，一个 warp 包含 32 个线程
+    // 说明：对 EXPERTS 做一些限制
     static_assert(EXPERTS / (ELTS_PER_LDG * WARP_SIZE_PARAM) == 0 || EXPERTS % (ELTS_PER_LDG * WARP_SIZE_PARAM) == 0, "");
+    // 说明：每个线程处理的向量个数，VECs = vectors，一个向量包含 ELTS_PER_LDG 个元素（专家）
     static constexpr int VECs_PER_THREAD = MAX(1, EXPERTS / (ELTS_PER_LDG * WARP_SIZE_PARAM));
+    // 说明：每个线程处理的元素（专家）个数
     static constexpr int VPT = VECs_PER_THREAD * ELTS_PER_LDG;
+    // 说明：每行需要的线程数
     static constexpr int THREADS_PER_ROW = EXPERTS / VPT;
+    // 说明：每个 warp 处理的行数
     static const int ROWS_PER_WARP = WARP_SIZE_PARAM / THREADS_PER_ROW;
 };
 } // namespace detail
 
+// 已阅
 template <int EXPERTS, int WARPS_PER_TB, int WARP_SIZE_PARAM, int MAX_BYTES_PER_LDG, typename IndType, typename InputType, ScoringFunc SF>
 void topkGatingLauncherHelper(const InputType* input, const bool* finished, float* output, IndType* indices,
     int* source_row, const int num_rows, const int k, const int start_expert, const int end_expert, const bool renormalize,
@@ -594,6 +658,7 @@ void topkGatingLauncherHelper(const InputType* input, const bool* finished, floa
         input, finished, output, num_rows, indices, source_row, k, start_expert, end_expert, renormalize, bias);
 }
 
+// 已阅
 #ifndef USE_ROCM
   #define LAUNCH_TOPK(NUM_EXPERTS, WARPS_PER_TB, MAX_BYTES)                   \
     static_assert(WARP_SIZE == 32,                                            \
@@ -623,6 +688,8 @@ void topkGatingLauncherHelper(const InputType* input, const bool* finished, floa
     }
 #endif
 
+// 已阅
+// 说明：IndType 指 Index Type，InputType 指 Gating Output Type
 template <typename IndType, typename InputType, ScoringFunc SF>
 void topkGatingKernelLauncher(
     const InputType* gating_output,
@@ -698,8 +765,10 @@ void topkGatingKernelLauncher(
         default: {
             TORCH_CHECK(workspace != nullptr,
                 "workspace must be provided for num_experts that are not a power of 2 or multiple of 64.");
+            // 说明：TPB = Threads Per Block 
             static constexpr int TPB = 256;
             if constexpr (SF == SCORING_SOFTMAX) {
+              // 说明: 每个 token 分配一个 block 来计算 softmax
               moeSoftmax<TPB, InputType><<<num_tokens, TPB, 0, stream>>>(
                 gating_output, nullptr, workspace, num_experts);
             } else if constexpr (SF == SCORING_SIGMOID) {
@@ -719,6 +788,7 @@ void topkGatingKernelLauncher(
 } // namespace vllm
 
 
+// 已阅
 template<typename ComputeType, vllm::moe::ScoringFunc SF>
 void dispatch_topk_launch(
     torch::Tensor& gating_output,
@@ -771,6 +841,7 @@ void dispatch_topk_launch(
     }
 }
 
+// 已阅
 void topk_softmax(
     torch::Tensor& topk_weights,                // [num_tokens, topk]
     torch::Tensor& topk_indices,                // [num_tokens, topk]
@@ -784,12 +855,14 @@ void topk_softmax(
     const int topk = topk_weights.size(-1);
 
     const bool is_pow_2 = (num_experts != 0) && ((num_experts & (num_experts - 1)) == 0);
+    // 说明：workspace 用于存储 softmax 结果，当专家数量不是 2 的幂时，或者专家数量大于 256 时使用
     const bool needs_workspace = !is_pow_2 || num_experts > 256;
     const int64_t workspace_size = needs_workspace ? num_tokens * num_experts : 0;
 
     const at::cuda::OptionalCUDAGuard device_guard(device_of(gating_output));
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     const auto workspace_options = gating_output.options().dtype(at::ScalarType::Float);
+    // 说明：分配 workspace 张量，用于存储 softmax 结果
     torch::Tensor softmax_workspace = torch::empty({workspace_size}, workspace_options);
 
     if (gating_output.scalar_type() == at::ScalarType::Float) {
@@ -828,6 +901,7 @@ void topk_sigmoid(
     const at::cuda::OptionalCUDAGuard device_guard(device_of(gating_output));
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     const auto workspace_options = gating_output.options().dtype(at::ScalarType::Float);
+    // 说明：分配 workspace 张量，用于存储 softmax 结果
     torch::Tensor workspace = torch::empty({workspace_size}, workspace_options);
 
     if (gating_output.scalar_type() == at::ScalarType::Float) {
@@ -835,6 +909,8 @@ void topk_sigmoid(
             token_expert_indices, workspace, num_tokens, num_experts, topk, renormalize,
             bias, stream);
     } else if (gating_output.scalar_type() == at::ScalarType::Half) {
+        // 说明：torch.fp16 在 Pytorch C++ API 中通常写作 at::ScalarType::Half；
+        // __half 是 CUDA 中的 fp16 类型
         dispatch_topk_launch<__half, vllm::moe::SCORING_SIGMOID>(gating_output, topk_weights, topk_indices,
             token_expert_indices, workspace, num_tokens, num_experts, topk, renormalize,
             bias, stream);

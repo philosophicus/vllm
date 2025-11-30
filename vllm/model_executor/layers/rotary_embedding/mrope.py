@@ -396,6 +396,9 @@ class MRotaryEmbedding(RotaryEmbeddingBase):
             for _ in range(3)
         ]
 
+    # 说明：将 next input positions 写入到 out 数组中，
+    # positions 范围是 [mrope_position_delta + context_len,
+    # mrope_position_delta + context_len + num_new_tokens)
     @staticmethod
     def get_next_input_positions_tensor(
         out: np.ndarray,

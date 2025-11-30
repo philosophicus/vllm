@@ -160,6 +160,7 @@ def make_fp8_moe_alpha_scales_for_fi(
     return g1_alphas, g2_alphas
 
 
+# 已阅
 def get_flashinfer_moe_backend() -> FlashinferMoeBackend:
     backend_map = {
         "throughput": FlashinferMoeBackend.CUTLASS,

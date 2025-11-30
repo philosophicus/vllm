@@ -120,6 +120,7 @@ class MultiModalRegistry:
 
         return mm_options if len(mm_options) > 0 else None
 
+    # 已阅
     def supports_multimodal_inputs(self, model_config: "ModelConfig") -> bool:
         """
         Checks if the model supports multimodal inputs.
@@ -135,6 +136,10 @@ class MultiModalRegistry:
 
         # Check if all supported modalities have limit == 0
         if all(
+            # 说明：supported_modalities 中也包含支持的 modality 的最大输入项数量，
+            # 但是这里做检查并没有用到，而是用了 multimodal_config 中的 get_limit_per_prompt
+            # 问题：supported_modalities 中的数量和 multimodal_config 中的数量有什么关系？
+            # supported_modalities 中的数量也是 per prompt 吗？
             mm_config.get_limit_per_prompt(modality) == 0
             for modality in info.supported_mm_limits
         ):

@@ -45,6 +45,7 @@ WeightsMapping = Mapping[str, str | None]
 """If a key maps to a value of `None`, the corresponding weight is ignored."""
 
 
+# 已阅
 @dataclass
 class WeightsMapper:
     """Maps the name of each weight if they match the following patterns."""
@@ -409,6 +410,7 @@ def flatten_bn(
     return [x_n for x_b in x for x_n in x_b]
 
 
+# 已阅
 def _flatten_embeddings(embeddings: NestedTensors) -> torch.Tensor:
     """
     Recursively flattens and concatenates NestedTensors on all but the last
@@ -422,6 +424,8 @@ def _flatten_embeddings(embeddings: NestedTensors) -> torch.Tensor:
     return torch.cat(tuple(_flatten_embeddings(t) for t in embeddings))
 
 
+# 已阅
+# 说明：嵌入数量表达式，如 "2 x 3 + 4 x 5"
 def _embedding_count_expression(embeddings: NestedTensors) -> str:
     """
     Constructs a debugging representation of the number of embeddings in the
@@ -442,9 +446,13 @@ def split_list_into_ranges(lst: torch.Tensor, interval: int) -> list[list[int]]:
     return ranges
 
 
+# 已阅
+# 说明：将 multimodal_embeddings 合并到 input_embeds 中，
+# 具体覆盖的位置对应了 input_ids 中的占位符 token 位置
 def _merge_multimodal_embeddings(
     inputs_embeds: torch.Tensor,
     multimodal_embeddings: NestedTensors,
+    # 说明: shape 为 (total_num_scheduled_tokens, ) 的布尔值
     is_multimodal: torch.Tensor,
 ) -> torch.Tensor:
     """
@@ -467,7 +475,10 @@ def _merge_multimodal_embeddings(
 
         # NOTE: This can avoid D2H sync (#22105), but fails to
         # raise an error if is_multimodal.sum() < len(mm_embeds_flat)
+        # 理解：is_multimodal.sum() < len(mm_embeds_flat) 表示多模态嵌入的数量超过了占位符 token 的数量
         inputs_embeds.masked_scatter_(
+            # 理解：unsqueeze(-1) 是为了扩展维度以匹配 inputs_embeds 的形状，
+            # 让最后的特征维度要么每一位都用多模态嵌入覆盖，要么都不覆盖
             is_multimodal.unsqueeze(-1), mm_embeds_flat.to(dtype=input_dtype)
         )
     except RuntimeError as e:
@@ -597,6 +608,8 @@ class LayerFn(Protocol):
     def __call__(self, prefix: str) -> torch.nn.Module: ...
 
 
+# 已阅
+# 说明：用于 pipeline parallelism 的占位层
 class PPMissingLayer(torch.nn.Identity):
     """
     A placeholder layer for missing layers in a pipeline parallel model.
@@ -798,6 +811,8 @@ def get_draft_quant_config(
     )
 
 
+# 已阅
+# 说明：num_attn_module 表示每个 Layer 中 attention module 的数量
 def extract_layer_index(layer_name: str, num_attn_module: int = 1) -> int:
     """
     Extract the layer index from the module name.

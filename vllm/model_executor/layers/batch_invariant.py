@@ -985,6 +985,9 @@ def enable_batch_invariant_mode():
     torch.backends.cuda.preferred_blas_library(backend="cublaslt")
 
 
+# 已阅
+# 说明：默认不是 batch_invariant 模式，用户需要显式设置环境变量 VLLM_BATCH_INVARIANT 为非零值来启用该模式
+# batch_invariant 相关概念参考 https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/
 def _read_vllm_batch_invariant() -> bool:
     val = os.getenv("VLLM_BATCH_INVARIANT", "0")
     try:
@@ -996,6 +999,7 @@ def _read_vllm_batch_invariant() -> bool:
 VLLM_BATCH_INVARIANT: bool = _read_vllm_batch_invariant()
 
 
+# 已阅
 def vllm_is_batch_invariant() -> bool:
     return VLLM_BATCH_INVARIANT
 
