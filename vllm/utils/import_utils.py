@@ -103,6 +103,7 @@ def import_from_path(module_name: str, file_path: str | os.PathLike):
     return module
 
 
+# 已阅
 def resolve_obj_by_qualname(qualname: str) -> Any:
     """
     Resolve an object by its fully-qualified class name.
@@ -112,6 +113,8 @@ def resolve_obj_by_qualname(qualname: str) -> Any:
     return getattr(module, obj_name)
 
 
+# 已阅
+# 说明：返回一个字典，key 是 extra（额外功能）名称，value 是包含该 extra（额外功能）的、vllm 项目依赖的包名称列表
 @cache
 def get_vllm_optional_dependencies():
     metadata = importlib.metadata.metadata("vllm")
@@ -284,6 +287,7 @@ class _PlaceholderBase:
         return self.__getattr__("__exit__")
 
 
+# 已阅
 class PlaceholderModule(_PlaceholderBase):
     """
     A placeholder object to use when a module does not exist.
@@ -412,6 +416,7 @@ def has_deep_ep() -> bool:
     return _has_module("deep_ep")
 
 
+# 已阅
 def has_deep_gemm() -> bool:
     """Whether the optional `deep_gemm` package is available."""
     return _has_module("deep_gemm")

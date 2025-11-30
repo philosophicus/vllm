@@ -1289,6 +1289,7 @@ def try_get_optimal_moe_config(
     return config
 
 
+# 已阅
 def vllm_topk_softmax(
     topk_weights: torch.Tensor,
     topk_indices: torch.Tensor,
@@ -1307,6 +1308,7 @@ def vllm_topk_softmax(
     return topk_weights, topk_indices
 
 
+# 已阅
 def dispatch_topk_func(
     use_rocm_aiter: bool = False,
 ) -> Callable[..., tuple[torch.Tensor, ...]]:
@@ -1315,6 +1317,7 @@ def dispatch_topk_func(
     return vllm_topk_softmax
 
 
+# 已阅
 def fused_topk(
     hidden_states: torch.Tensor,
     gating_output: torch.Tensor,
@@ -1340,6 +1343,7 @@ def fused_topk(
     )
 
     topk_func = dispatch_topk_func(use_rocm_aiter=rocm_aiter_ops.is_fused_moe_enabled())
+    # 说明：vllm_topk_softmax 对应的实现在 void topk_softmax 方法中
     topk_weights, topk_ids = topk_func(
         topk_weights, topk_ids, token_expert_indices, gating_output, renormalize
     )
@@ -1369,6 +1373,7 @@ def fused_topk_bias(
     return topk_weights.to(torch.float32), topk_indices.to(torch.int32)
 
 
+# 已阅
 # This is used by the Deepseek-V2 and Deepseek-V3 model
 @torch.compile(
     dynamic=True,
@@ -1405,6 +1410,8 @@ def grouped_topk(
             routed_scaling_factor=routed_scaling_factor,
         )
 
+    # 说明：hidden_states: [num_tokens, hidden_size]
+    # gating_output: [num_tokens, num_experts]
     assert hidden_states.size(0) == gating_output.size(0), "Number of tokens mismatch"
 
     if scoring_func == "softmax":
@@ -1415,11 +1422,17 @@ def grouped_topk(
         raise ValueError(f"Unsupported scoring function: {scoring_func}")
 
     num_token = scores.size(0)
+    # 说明：需要修正的时候选组内 top-2，否则组内选 top-1
     if e_score_correction_bias is not None:
         # Store original scores before applying correction bias. We use biased
         # scores for expert selection but original scores for routing weights
+        # 说明：e_score_correction_bias 是对 scorinng_func 的结果 score 做的偏置修正
+        # 说明：关注上面注释，使用原始的 scores 作为路由权重，而使用修正后的 scores 进行专家选择
         original_scores = scores
+        # 说明：e_score_correction_bias 的 shape 是 [num_experts]
         scores = scores + e_score_correction_bias.unsqueeze(0)
+        # 说明：分组 -> 组内选择 top-2 -> [0] 表示取 values 不要 indices -> sum(dim=-1) 表示组内求和
+        # 说明：group_scores 的 shape 是 [num_tokens, num_expert_groups]
         group_scores = (
             scores.view(num_token, num_expert_group, -1).topk(2, dim=-1)[0].sum(dim=-1)
         )
@@ -1434,15 +1447,19 @@ def grouped_topk(
         1
     ]  # [n, top_k_group]
     group_mask = torch.zeros_like(group_scores)  # [n, n_group]
+    # 说明：按照 group_idx 将 group_mask 对应位置设为 1
     group_mask.scatter_(1, group_idx, 1)  # [n, n_group]
     score_mask = (
         group_mask.unsqueeze(-1)
+        # 说明：shape 为 [num_tokens, num_expert_groups, num_experts_per_group]
         .expand(num_token, num_expert_group, scores.size(-1) // num_expert_group)
         .reshape(num_token, -1)
     )  # [n, e]
+    # 说明：所有没有被选中的专家对应位置设为 -inf
     tmp_scores = scores.masked_fill(~score_mask.bool(), float("-inf"))  # [n, e]
 
     if e_score_correction_bias is not None:
+        # 从 topk_group 个组中选择 topk 专家
         topk_ids = torch.topk(tmp_scores, k=topk, dim=-1, sorted=use_sorted)[1]
         # Use original unbiased scores for the routing weights
         topk_weights = original_scores.gather(1, topk_ids)
@@ -1455,6 +1472,7 @@ def grouped_topk(
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
 
     if routed_scaling_factor != 1.0:
+        # 说明：权重路由的缩放因子 (Scaling factor for routing weights)
         topk_weights = topk_weights * routed_scaling_factor
     return topk_weights.to(torch.float32), topk_ids.to(torch.int32)
 
@@ -1538,6 +1556,7 @@ class GroupedTopk(CustomOp):
             )
 
 
+# 已阅
 @torch.compile(dynamic=True, backend=current_platform.simple_compile_backend)
 def eplb_map_to_physical_and_record(
     topk_ids: torch.Tensor,
@@ -1567,20 +1586,31 @@ def eplb_map_to_physical_and_record(
 
     # In case `indices_type` is not `torch.long` or `torch.int`,
     # e.g. `torch.uint32` as required by dispatch/combine kernels
+    # 说明：topk_ids 的 shape 是 (num_tokens, top_k)
     topk_ids_long = topk_ids.long()
     # Use (token position) modulo (replica count)
     # to deterministically choose a replica
+    # 说明：replica_count 的 shape 是 (num_tokens, top_k)
     replica_count = logical_replica_count[topk_ids_long]
     # Flatten-position based index, reshaped back to `topk_ids` shape
     pos_indices = torch.arange(
         topk_ids.numel(), device=topk_ids.device, dtype=torch.long
     ).reshape_as(topk_ids)
     # Compute pseudo-random indices by modulo
+    # 说明：replica_indices 的 shape 是 (num_tokens, top_k, 1)，
+    # 保持维度数为 3（index 与 input 维度数相同），以便后续 gather 操作
     replica_indices = (pos_indices % replica_count).unsqueeze(-1)
+    # 说明：physical_ids 的 shape 是 (num_tokens, top_k)
+    # logical_to_physical_map 的 shape 是 (num_logical_experts, num_replicas_per_logical_expert)
+    # topk_ids_long 的 shape 是 (num_tokens, top_k)
+    # logical_to_physical_map[topk_ids_long] 的 shape 是 (num_tokens, top_k, num_replicas_per_logical_expert)
+    # 直观理解，保持 topk_ids_long 维度不变，用 topk_ids_long 的每个元素从 logical_to_physical_map 中提取对应的行
+    # gather 操作 dim=-1, output[i][j][k] = input[i][j][index[i][j][k]]
     physical_ids = (
         logical_to_physical_map[topk_ids_long].gather(-1, replica_indices).squeeze(-1)
     )
 
+    # 说明：topk_ids 变为 physical expert ids
     topk_ids = physical_ids
 
     # 2. Record expert load metrics.
@@ -1601,6 +1631,7 @@ def eplb_map_to_physical_and_record(
 
     # `torch.bincount` is not compilable, so use `scatter_add_` instead.
     topk_ids_flatten = topk_ids.flatten()
+    # 说明：expert_load_view[index[i]] += src[i]
     expert_load_view.scatter_add_(
         dim=0,
         index=topk_ids_flatten.long(),
@@ -1609,6 +1640,7 @@ def eplb_map_to_physical_and_record(
     return topk_ids
 
 
+# 已阅
 def fused_grouped_topk(
     hidden_states: torch.Tensor,
     gating_output: torch.Tensor,

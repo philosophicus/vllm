@@ -27,6 +27,7 @@ def is_cloud_storage(model_or_path: str) -> bool:
     return is_s3(model_or_path) or is_gcs(model_or_path)
 
 
+# 已阅
 def modelscope_list_repo_files(
     repo_id: str,
     revision: str | None = None,

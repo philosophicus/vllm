@@ -172,6 +172,7 @@ class Platform:
     def get_max_output_tokens(self, prompt_len: int) -> int:
         return sys.maxsize
 
+    # 已阅
     def is_cuda_alike(self) -> bool:
         """Stateless version of [torch.cuda.is_available][]."""
         return self._enum in (PlatformEnum.CUDA, PlatformEnum.ROCM)
@@ -461,6 +462,7 @@ class Platform:
 
         return CpuArchEnum.OTHER if machine else CpuArchEnum.UNKNOWN
 
+    # 已阅
     @classmethod
     def is_pin_memory_available(cls) -> bool:
         """Checks whether pin memory is available on the current platform."""

@@ -304,6 +304,7 @@ class LinearBase(CustomOp):
                 param.tp_size = self.tp_size
 
 
+# 说明：Replicated Linear 指每个 rank 都存储全量权重和偏置的线性层
 @CustomOp.register("replicated_linear")
 class ReplicatedLinear(LinearBase):
     """Replicated linear layer.

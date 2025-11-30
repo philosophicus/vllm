@@ -14,9 +14,13 @@ class LoRAMappingType(Enum):
     CONNECTOR = 3
 
 
+# 已阅
+# 说明：LoRAMapping 用于存储 LoRA 适配器的映射关系
 @dataclass
 class LoRAMapping:
+    # 说明：列表元素为每个 token 对应的 LoRA 适配器 ID
     index_mapping: tuple[int, ...]
+    # 说明：列表元素为每个请求对应的 LoRA 适配器 ID
     prompt_mapping: tuple[int, ...]
     is_prefill: bool = False
     type: LoRAMappingType = LoRAMappingType.LANGUAGE

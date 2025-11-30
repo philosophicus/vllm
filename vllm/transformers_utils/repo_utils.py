@@ -31,6 +31,7 @@ from vllm.logger import init_logger
 logger = init_logger(__name__)
 
 
+# 已阅
 def _get_hf_token() -> str | None:
     """
     Get the HuggingFace token from environment variable.
@@ -49,6 +50,7 @@ def _get_hf_token() -> str | None:
 _R = TypeVar("_R")
 
 
+# 已阅
 def with_retry(
     func: Callable[[], _R],
     log_msg: str,
@@ -71,6 +73,8 @@ def with_retry(
     raise AssertionError("Should not be reached")
 
 
+# 说明：已阅
+# 从本地、ModelScope Hub 或 HuggingFace Hub 列出模型仓库中的文件列表
 # @cache doesn't cache exceptions
 @cache
 def list_repo_files(
@@ -110,6 +114,8 @@ def list_repo_files(
     return with_retry(lookup_files, "Error retrieving file list")
 
 
+# 已阅
+# 说明：从所有文件中过滤出符合 allow_patterns 模式的文件列表
 def list_filtered_repo_files(
     model_name_or_path: str,
     allow_patterns: list[str],
@@ -139,6 +145,8 @@ def list_filtered_repo_files(
             [
                 file
                 for file in all_files
+                # 说明：使用简单的通配符规则，没有使用正则表达式
+                # 只匹配文件名，不匹配路径
                 if fnmatch.fnmatch(os.path.basename(file), pattern)
             ]
         )
@@ -221,6 +229,9 @@ def get_hf_file_bytes(
     return None
 
 
+# 已阅
+# 说明：有本地文件则直接返回本地文件路径，否则尝试从缓存加载文件。
+# 缓存文件路径如果存在则返回缓存路径，否则返回 None
 def try_get_local_file(
     model: str | Path, file_name: str, revision: str | None = "main"
 ) -> Path | None:
@@ -239,6 +250,7 @@ def try_get_local_file(
     return None
 
 
+# 已阅
 def get_hf_file_to_dict(
     file_name: str, model: str | Path, revision: str | None = "main"
 ):

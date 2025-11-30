@@ -56,6 +56,7 @@ class _TokenizerRegistry:
 
         return None
 
+    # 已阅
     def load_tokenizer_cls(self, tokenizer_mode: str) -> type[TokenizerLike]:
         if tokenizer_mode not in self.tokenizers:
             raise ValueError(f"No tokenizer registered for {tokenizer_mode=!r}.")
@@ -78,6 +79,8 @@ TokenizerRegistry = _TokenizerRegistry(
 )
 
 
+# 已阅
+# 说明：解析并返回 tokenizer 初始化参数
 def resolve_tokenizer_args(
     tokenizer_name: str | Path,
     *args,
@@ -113,9 +116,11 @@ def resolve_tokenizer_args(
 
     # Separate model folder from file path for GGUF models
     if is_gguf(tokenizer_name):
+        # 说明：本地 GGUF 文件
         if check_gguf_file(tokenizer_name):
             kwargs["gguf_file"] = Path(tokenizer_name).name
             tokenizer_name = Path(tokenizer_name).parent
+        # 说明：远程 GGUF 文件
         elif is_remote_gguf(tokenizer_name):
             tokenizer_name, quant_type = split_remote_gguf(tokenizer_name)
             # Get the HuggingFace Hub path for the GGUF file
@@ -128,6 +133,7 @@ def resolve_tokenizer_args(
 
     if "truncation_side" not in kwargs:
         if runner_type == "generate" or runner_type == "draft":
+            # 说明：生成任务，左侧截断
             kwargs["truncation_side"] = "left"
         elif runner_type == "pooling":
             kwargs["truncation_side"] = "right"
@@ -135,6 +141,8 @@ def resolve_tokenizer_args(
             assert_never(runner_type)
 
     if tokenizer_mode == "slow":
+        # 说明：fast tokenizer 使用 rust 实现，slow tokenizer 使用 python 实现
+        # fast tokenizer 参考 https://github.com/huggingface/tokenizers
         if kwargs.get("use_fast", False):
             raise ValueError("Cannot use the fast tokenizer in slow tokenizer mode.")
 
@@ -173,6 +181,8 @@ def resolve_tokenizer_args(
 cached_resolve_tokenizer_args = lru_cache(resolve_tokenizer_args)
 
 
+# 已阅
+# 返回 (tokenizer_mode, tokenizer_name, args, kwargs)
 def tokenizer_args_from_config(config: "ModelConfig", **kwargs):
     return cached_resolve_tokenizer_args(
         config.tokenizer,
@@ -187,6 +197,7 @@ def tokenizer_args_from_config(config: "ModelConfig", **kwargs):
 _T = TypeVar("_T", bound=TokenizerLike, default=TokenizerLike)
 
 
+# 已阅
 def get_tokenizer(
     tokenizer_name: str | Path,
     *args,
@@ -197,6 +208,7 @@ def get_tokenizer(
     **kwargs,
 ) -> _T:
     """Gets a tokenizer for the given model name via HuggingFace or ModelScope."""
+    # 说明：tokenizer_mode 取值为 hf 或 mistral 或 deepseek_v32
     tokenizer_mode, tokenizer_name, args, kwargs = cached_resolve_tokenizer_args(
         tokenizer_name,
         *args,
@@ -224,6 +236,7 @@ def get_tokenizer(
 cached_get_tokenizer = lru_cache(get_tokenizer)
 
 
+# 已阅
 def cached_tokenizer_from_config(model_config: "ModelConfig", **kwargs):
     if model_config.skip_tokenizer_init:
         return None

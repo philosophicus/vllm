@@ -79,6 +79,8 @@ class Mxfp4Backend(Enum):
     TRITON = 6
 
 
+# 已阅
+# 说明：选择支持 LoRA 的 MXFP4 后端（triton 或 marlin）
 def get_mxfp4_backend_with_lora() -> Mxfp4Backend:
     """
     Not all MXFP4 backends support LoRA. Select backends that are known to

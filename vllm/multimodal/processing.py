@@ -1487,6 +1487,7 @@ class MultiModalProcessingInfo(NamedTuple):
     prompt_updates: MultiModalPromptUpdates
 
 
+# 说明：每个多模态模型有一个对应的处理器
 class BaseMultiModalProcessor(ABC, Generic[_I]):
     """
     Abstract base class to process multi-modal inputs to be used in vLLM.

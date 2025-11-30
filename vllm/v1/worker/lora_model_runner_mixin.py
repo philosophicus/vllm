@@ -38,6 +38,7 @@ class LoRAModelRunnerMixin:
             raise ValueError(f"{model.__class__.__name__} does not support LoRA yet.")
 
         # Add LoRA Manager to the Model Runner
+        # 说明：
         self.lora_manager = LRUCacheWorkerLoRAManager(
             vllm_config,
             device,
@@ -45,6 +46,7 @@ class LoRAModelRunnerMixin:
         )
         return self.lora_manager.create_lora_manager(model, vllm_config)
 
+    # 已阅
     def _set_active_loras(
         self,
         prompt_lora_mapping: tuple[int, ...],
@@ -58,6 +60,7 @@ class LoRAModelRunnerMixin:
         # non-cuda platforms.
         # On cuda platforms we use the same kernels for prefill and
         # decode and this flag is generally ignored.
+        # 说明：SGMV = Sparse General Matrix-Vector multiplication
         lora_mapping = LoRAMapping(
             token_lora_mapping,
             prompt_lora_mapping,
@@ -66,6 +69,8 @@ class LoRAModelRunnerMixin:
         )
         self.lora_manager.set_active_adapters(lora_requests, lora_mapping)
 
+    # 已阅
+    # 说明：确保 load_lora_model 已调用且 self.lora_manager 已创建
     def _ensure_lora_enabled(self) -> None:
         if not hasattr(self, "lora_manager"):
             raise RuntimeError("LoRA is not enabled. Use --enable-lora to enable LoRA.")

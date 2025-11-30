@@ -26,6 +26,7 @@ except ImportError:
     soundfile = PlaceholderModule("soundfile")  # type: ignore[assignment]
 
 
+# 已阅
 def resample_audio_librosa(
     audio: npt.NDArray[np.floating],
     *,
@@ -35,6 +36,7 @@ def resample_audio_librosa(
     return librosa.resample(audio, orig_sr=orig_sr, target_sr=target_sr)
 
 
+# 已阅
 def resample_audio_scipy(
     audio: npt.NDArray[np.floating],
     *,
@@ -51,11 +53,13 @@ def resample_audio_scipy(
     return audio
 
 
+# 已阅
 class AudioResampler:
     """Resample audio data to a target sample rate."""
 
     def __init__(
         self,
+        # 说明：目标采样率
         target_sr: float | None = None,
         method: Literal["librosa", "scipy"] = "librosa",
     ):

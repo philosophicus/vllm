@@ -395,6 +395,7 @@ class Worker(WorkerBase):
             self.model_runner.update_max_model_len(max_model_len)
         logger.debug("Updated max_model_len to %d", max_model_len)
 
+    # 说明：根据 KVCacheConfig 分配 GPU KV cache
     def initialize_from_config(self, kv_cache_config: KVCacheConfig) -> None:
         """Allocate GPU KV cache with the specified kv_cache_config."""
 
@@ -403,12 +404,15 @@ class Worker(WorkerBase):
         # NOTE(Kuntai): This need to be done before `initialize_kv_cache`,
         # because `initialize_kv_cache` will inject kv cache groups not
         # related to kv cache connector (e.g. kv cache sharing layers).
+        # 说明：初始化 KV connector 要用到 kv_cache_groups，所以要在不相关的 kv cache
+        # groups 被注入之前完成初始化
         ensure_kv_transfer_initialized(self.vllm_config, kv_cache_config)
 
         if self.vllm_config.model_config.enable_sleep_mode:
             from vllm.device_allocator.cumem import CuMemAllocator
 
             allocator = CuMemAllocator.get_instance()
+            # 说明：分配之后会立即释放内存池
             with allocator.use_memory_pool(tag="kv_cache"):
                 self.model_runner.initialize_kv_cache(kv_cache_config)
         else:

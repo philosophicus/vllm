@@ -65,6 +65,7 @@ class DeepGemmQuantScaleFMT(Enum):
         return cached
 
 
+# 已阅
 @functools.cache
 def is_deep_gemm_supported() -> bool:
     """Return `True` if DeepGEMM is supported on the current platform.

@@ -8,6 +8,8 @@ from vllm.v1.core.kv_cache_utils import BlockHash
 from vllm.v1.kv_offload.abstract import LoadStoreSpec
 
 
+# 已阅
+# 说明：定义与 C 结构体内存布局完全一致的 Python 类，实现 Python 数据与 C 内存的直接映射
 class BlockStatus(ctypes.Structure):
     """
     Offloading status for a single block of KV data.
@@ -26,6 +28,7 @@ class BlockStatus(ctypes.Structure):
         # initialize block as "not ready" (ref_cnt = -1)
         self.ref_cnt = -1
 
+    # 说明：是否已经准备好被 load
     @property
     def is_ready(self) -> bool:
         """
@@ -34,6 +37,11 @@ class BlockStatus(ctypes.Structure):
         return self.ref_cnt >= 0
 
 
+# 已阅
+# 说明：用于分配/释放 Block 和获取 LoadStoreSpec，LoadStoreSpec 用于描述如何加载/存储 KV 块
+# 实现类参考 CPUBackend
+# 这里对 Block 的管理都是逻辑上的，并没有具体的数据存储，只是描述了块的状态和标识
+# 具体的数据存储和传输逻辑在 OffloadingHandler 中实现
 class Backend(ABC):
     """
     An abstract class for allocating and returning specs for writing

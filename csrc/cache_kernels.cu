@@ -52,6 +52,7 @@ void swap_blocks(torch::Tensor& src, torch::Tensor& dst,
   // We use the stride instead of numel in case the cache is padded for memory
   // alignment reasons, we assume the blocks data (inclusive of any padding)
   // is contiguous in memory
+  // 说明：src 维度为 [num_blocks, ...]，stride(0) 表示每个 block 占用的元素数量
   const int64_t block_size_in_bytes = src.element_size() * src.stride(0);
   const at::cuda::OptionalCUDAGuard device_guard(
       src_device.is_cuda() ? src_device : dst_device);

@@ -63,8 +63,10 @@ MISTRAL_CONFIG_NAME = "params.json"
 logger = init_logger(__name__)
 
 
+# 已阅
 class LazyConfigDict(dict):
     def __getitem__(self, key):
+        # 说明：如果 key 对应的值是字符串，则动态导入对应的配置类
         if isinstance(value := super().__getitem__(key), type):
             return value
 
@@ -73,6 +75,7 @@ class LazyConfigDict(dict):
         return getattr(configs, value)
 
 
+# 已阅
 _CONFIG_REGISTRY: dict[str, type[PretrainedConfig]] = LazyConfigDict(
     afmoe="AfmoeConfig",
     bagel="BagelConfig",
@@ -122,6 +125,8 @@ def is_rope_parameters_nested(rope_parameters: dict[str, Any]) -> bool:
     return set(rope_parameters.keys()).issubset(ALLOWED_ATTENTION_LAYER_TYPES)
 
 
+# 已阅
+# 说明：config_dict 是原始的配置字典，而 config 是经过适配和处理后的模型配置类实例
 class HFConfigParser(ConfigParserBase):
     def parse(
         self,
@@ -192,6 +197,7 @@ class HFConfigParser(ConfigParserBase):
         return config_dict, config
 
 
+# 已阅
 class MistralConfigParser(ConfigParserBase):
     def parse(
         self,
@@ -256,6 +262,7 @@ ConfigFormat = Literal[
 ]
 
 
+# 已阅
 def get_config_parser(config_format: str) -> ConfigParserBase:
     """Get the config parser for a given config format."""
     if config_format not in _CONFIG_FORMAT_TO_CONFIG_PARSER:
@@ -475,6 +482,7 @@ def is_interleaved(config: PretrainedConfig) -> bool:
     return False
 
 
+# 已阅
 def _maybe_update_auto_config_kwargs(kwargs: dict[str, Any], model_type: str):
     """
     Update kwargs for AutoConfig initialization based on model_type
@@ -484,11 +492,13 @@ def _maybe_update_auto_config_kwargs(kwargs: dict[str, Any], model_type: str):
     return kwargs
 
 
+# 已阅
 def _maybe_remap_hf_config_attrs(config: PretrainedConfig) -> PretrainedConfig:
     """Remap config attributes to match the expected names."""
     for old_attr, new_attr in _CONFIG_ATTRS_MAPPING.items():
         if hasattr(config, old_attr):
             if not hasattr(config, new_attr):
+                # 说明：如果新属性不存在，则增加新属性，保留旧属性
                 config.update({new_attr: getattr(config, old_attr)})
             logger.debug("Remapped config attribute '%s' to '%s'", old_attr, new_attr)
     return config
@@ -1130,6 +1140,7 @@ def get_safetensors_params_metadata(
     return full_metadata
 
 
+# 已阅
 def _download_mistral_config_file(model, revision) -> dict:
     config_file_name = "params.json"
     config_dict = get_hf_file_to_dict(config_file_name, model, revision)
