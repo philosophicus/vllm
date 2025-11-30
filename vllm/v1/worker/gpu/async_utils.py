@@ -83,14 +83,19 @@ class AsyncOutput(AsyncModelRunnerOutput):
         return self.model_runner_output
 
 
+# 已阅
+# 理解：等待 GPU 计算完成的上下文管理器
 @contextmanager
 def async_barrier(event: torch.cuda.Event | None):
     if event is not None:
+        # 说明：CPU 等待 GPU 计算完成
         event.synchronize()
     try:
         yield
     finally:
         if event is not None:
+            # 说明：在 GPU 上记录一个事件，表示 GPU 计算已经完成
+            # 等待中的 CPU 可以继续执行 
             event.record()
 
 

@@ -484,6 +484,9 @@ def split_decodes_prefills_and_extends(
     )
 
 
+# 已阅
+# 说明：前提是该 batch 已经按照长度顺序重排序过；将 batch 拆分为前面是 decode 请求，
+# 后面是 prefill 请求，找到 decode 和 prefill 请求的边界
 def split_decodes_and_prefills(
     common_attn_metadata: CommonAttentionMetadata,
     decode_threshold: int = 1,
@@ -520,9 +523,12 @@ def split_decodes_and_prefills(
     query_lens = query_start_loc[1:] - query_start_loc[:-1]
     if query_lens[0].item() > decode_threshold:
         # first request is not decode, so no decode requests
+        # 说明：按照 query 长度排序后的 batch，第一个请求不是 decode 请求，
+        # 后面也不会有 decode 请求
         return 0, num_reqs, 0, num_tokens
 
     if require_uniform:
+        # 说明：用于 full cuda graphs
         # check if we are in a padded uniform batch; this is used for full-CGs, some
         # requests may have a query length of 0 but since they are padding its fine
         # to treat them as decodes (ensures num_decodes matches the captured size)
@@ -545,6 +551,8 @@ def split_decodes_and_prefills(
     return (num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens)
 
 
+# 已阅
+# 说明：确保每个 prefill chunk 的总长度不超过 workspace_size；
 def split_prefill_chunks(
     seq_lens_cpu: torch.Tensor, workspace_size: int, request_offset: int = 0
 ) -> list[tuple[int, int]]:
@@ -561,17 +569,24 @@ def split_prefill_chunks(
     """
     chunk_bounds = []
     i, n = 0, len(seq_lens_cpu)
+    # 说明：确保没有单个请求序列的长度超过 workspace_size
     assert torch.all(seq_lens_cpu <= workspace_size).item()
 
+    # 说明：贪心地将请求序列划分到 chunk 中，每个 chunk 包含连续的、总长度不小于 workspace_size 的一组请求
     while i < n:
         start, chunk_total = i, 0
         while i < n and (chunk_total + (s := seq_lens_cpu[i].item())) <= workspace_size:
             chunk_total += s
             i += 1
         chunk_bounds.append((start + request_offset, i + request_offset))
+    # 说明：返回开始（inclusive）和结束（exclusive）请求的索引，索引都加上 request_offset
     return chunk_bounds
 
 
+# 已阅
+# 说明：Reorder the batch for improved efficiency. Depending on the attention 
+# backend implementation and the current characteristics of the batch, zero 
+# or more Swap Move operations may be applied to reorder the batch
 def reorder_batch_to_split_decodes_and_prefills(
     input_batch: "InputBatch",
     scheduler_output: "SchedulerOutput",
@@ -611,6 +626,7 @@ def reorder_batch_to_split_decodes_and_prefills(
     num_decodes = int(is_decode.sum())
     num_extends = int(is_extend.sum())
 
+    # 说明：重排序后的目标区域
     target_regions = np.zeros(num_reqs, dtype=np.int32)
     target_regions[num_decodes : num_decodes + num_extends] = 1
     target_regions[num_decodes + num_extends :] = 2
@@ -632,6 +648,9 @@ def reorder_batch_to_split_decodes_and_prefills(
         while src != dst:
             input_batch.swap_states(src, dst)
             # Mark dst as done by updating its destination to itself
+            # 说明：原来的 src 现在到达 dst 位置，因为已经处理完了，所以需要将 det 位置的目的地设置为自己；
+            # 原来的 dst 现在到达 src，需要与原来 dst 的目标位置进行比较
+            # 所以先保留原来 dst 位置的目的地 next_dst，然后标记 dst 位置为已处理完（目的地为自己）
             next_dst = src_dest_map.get(dst, dst)
             src_dest_map[dst] = dst
             dst = next_dst
@@ -687,6 +706,7 @@ class KVSharingFastPrefillMetadata(Protocol):
     num_logits_indices: int | None = None
 
 
+# 待看
 def create_fast_prefill_custom_backend(
     prefix: str,
     underlying_attn_backend: type[AttentionBackend],
@@ -732,6 +752,7 @@ def create_fast_prefill_custom_backend(
     return attn_backend
 
 
+# 已阅
 def compute_causal_conv1d_metadata(query_start_loc_p: torch.Tensor):
     # Needed for causal_conv1d
     seqlens = query_start_loc_p.diff().to("cpu")
@@ -740,18 +761,24 @@ def compute_causal_conv1d_metadata(query_start_loc_p: torch.Tensor):
     token_chunk_offset_ptr = None
     device = query_start_loc_p.device
     for BLOCK_M in [8]:  # cover all BLOCK_M values
+        # 说明：向上取整，计算每个序列需要多少个 BLOCK_M 大小的块
         nums = -(-seqlens // BLOCK_M)
         nums_dict[BLOCK_M] = {}
+        # 说明：nums = [2, 4, 2]
         nums_dict[BLOCK_M]["nums"] = nums
         nums_dict[BLOCK_M]["tot"] = nums.sum().item()
+        # 说明：mlist = [0, 0, 1, 1, 1, 1, 2, 2]
         mlist = torch.from_numpy(np.repeat(np.arange(len(nums)), nums))
         nums_dict[BLOCK_M]["mlist"] = mlist
         mlist_len = len(nums_dict[BLOCK_M]["mlist"])
+        # 说明：mlist_len 的值和 tot 是相等的
         nums_dict[BLOCK_M]["mlist_len"] = mlist_len
+        # 说明：最大支持的程序数量，对应 thread block 数量
         MAX_NUM_PROGRAMS = max(1024, mlist_len) * 2
         offsetlist = []  # type: ignore
         for idx, num in enumerate(nums):
             offsetlist.extend(range(num))
+        # 说明：offsetlist = [0, 1, 0, 1, 2, 3, 0, 1]
         offsetlist = torch.tensor(offsetlist, dtype=torch.int32)
         nums_dict[BLOCK_M]["offsetlist"] = offsetlist
 

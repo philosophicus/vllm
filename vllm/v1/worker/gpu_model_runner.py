@@ -313,6 +313,7 @@ class ExecuteModelState(NamedTuple):
     cudagraph_stats: CUDAGraphStat | None
 
 
+# 说明：V1 Model Runner
 class GPUModelRunner(
     LoRAModelRunnerMixin, KVConnectorModelRunnerMixin, ECConnectorModelRunnerMixin
 ):
@@ -608,7 +609,10 @@ class GPUModelRunner(
         # If an Attention layer `layer_name` is in the keys of this dict, it
         # means this layer will perform attention using the keys and values
         # from the KV cache of `shared_kv_cache_layers[layer_name]`.
+        # 说明：共享 KV Cache 的层 --> 被共享 KV Cache 的层
         self.shared_kv_cache_layers: dict[str, str] = {}
+        # 说明：记录可以使用 KV 共享快速预填充的层，是通过从后向前遍历 Attention 层来确定的，
+        # 连续的可以共享 KV Cache 的层都会被加入到这个集合中
         self.kv_sharing_fast_prefill_eligible_layers: set[str] = set()
 
         self.kv_sharing_fast_prefill_logits_indices = None
@@ -628,6 +632,7 @@ class GPUModelRunner(
             else None
         )
 
+        # 设置为所有 AttentionGroup 中最小的 reorder_batch_threshold
         self.reorder_batch_threshold: int | None = None
 
         # Attention layers that are only in the KVCacheConfig of the runner
@@ -646,6 +651,8 @@ class GPUModelRunner(
             pin_memory=self.pin_memory,
         )
 
+        # 说明：用于拷贝 valid_sampled_token_count 到 CPU 的事件和专用流，
+        # 与 draft model 的 prepare_input 同时执行（overlap） 
         # Pre-allocated tensor for copying valid sampled token counts to CPU,
         # with dedicated stream for overlapping and event for coordination.
         self.valid_sampled_token_count_event: torch.Event | None = None
@@ -794,6 +801,7 @@ class GPUModelRunner(
         )
         return model_kwargs
 
+    # 已阅
     def _may_reorder_batch(self, scheduler_output: "SchedulerOutput") -> None:
         """
         Update the order of requests in the batch based on the attention
@@ -903,6 +911,7 @@ class GPUModelRunner(
                 to_update = model.pooler.get_pooling_updates(task)
                 to_update.apply(pooling_params)
 
+            # 为新调度的请求创建缓存状态
             req_state = CachedRequestState(
                 req_id=req_id,
                 prompt_token_ids=new_req_data.prompt_token_ids,
@@ -1064,6 +1073,13 @@ class GPUModelRunner(
         # Refresh batch metadata with any pending updates.
         self.input_batch.refresh_metadata()
 
+    # 说明：记录真正被接受的 token 数量
+    # 对注释内容理解：linear attention 中，只保留最后一个 token 的 state，
+    # 而 MTP/EAGLE 中，draft token 的 state 会一直保留，直到决定每个序列接受多少 token，
+    # 然后在下一次迭代中根据接受的 token 数量进行 shifting。
+    # 具体可以参考 _causal_conv1d_update_kernel 中的注释理解；
+    # 数据会经历 input_batch.num_accepted_tokens_cpu -> self.num_accepted_tokens -> attention metadata 
+    # 的过程，具体可以参考本文件中对 GDNAttentionMetadataBuilder 的处理
     def _update_states_after_model_execute(
         self, output_token_ids: torch.Tensor
     ) -> None:
@@ -1081,6 +1097,7 @@ class GPUModelRunner(
         # Find the number of accepted tokens for each sequence.
         num_accepted_tokens = (
             (
+                # 说明：拼接一个 -1，针对所有 token 都不是 -1 的情况
                 torch.cat(
                     [
                         output_token_ids,
@@ -1164,6 +1181,7 @@ class GPUModelRunner(
         dummy_modality = mm_budget.get_modality_with_max_tokens()
         return self._get_mm_dummy_batch(dummy_modality, num_seqs)
 
+    # 已阅
     def _get_cumsum_and_arange(
         self,
         num_tokens: np.ndarray,
@@ -1359,6 +1377,7 @@ class GPUModelRunner(
 
         # OPTIMIZATION: Start copying the block table first.
         # This way, we can overlap the copy with the following CPU operations.
+        # 理解：先将 block_table 提交到 GPU 上，后续的 CPU 计算可以和 GPU 的 block_table 计算重叠
         self.input_batch.block_table.commit_block_table(num_reqs)
 
         # Get request indices.
@@ -1474,6 +1493,7 @@ class GPUModelRunner(
         num_tokens = [self.requests[r].num_tokens for r in self.input_batch.req_ids]
         num_tokens_np = np.array(num_tokens, dtype=np.int32)
 
+        # 说明：丢弃请求的条件是 num_computed_tokens + num_scheduled_tokens < num_prompt_tokens + len(output_token_ids)
         # Record which requests should not be sampled,
         # so that we could clear the sampled tokens before returning
         self.discard_request_mask.np[:num_reqs] = (
@@ -1939,6 +1959,8 @@ class GPUModelRunner(
         )
         return common_prefix_len if use_cascade else 0
 
+    # 已阅
+    # 说明：mrope_position_delta 修改后，要重新计算 mrope_positions
     def _calc_mrope_positions(self, scheduler_output: "SchedulerOutput"):
         mrope_pos_ptr = 0
         for index, req_id in enumerate(self.input_batch.req_ids):
@@ -1958,6 +1980,7 @@ class GPUModelRunner(
                 prompt_part_len = num_scheduled_tokens
                 completion_part_len = 0
 
+            # 说明：将 scheduled_tokens 拆分成 prompt part 和 completion part
             assert num_scheduled_tokens == prompt_part_len + completion_part_len
 
             if prompt_part_len > 0:
@@ -2035,6 +2058,7 @@ class GPUModelRunner(
 
                 xdrope_pos_ptr += completion_part_len
 
+    # 已阅
     def _calc_spec_decode_metadata(
         self,
         num_draft_tokens: np.ndarray,
@@ -2066,6 +2090,8 @@ class GPUModelRunner(
         # Step 3. [0, 1, 2, 3, 103, 104, 105, 106, 206, 207, 208]
         logits_indices += arange
 
+        # 说明：bonus_logits_indices: [3, 4, 7, 8, 10]
+        # 说明：bonus logits indices 就是每个请求的最后一个 draft token 的 index
         # Compute the bonus logits indices.
         bonus_logits_indices = cu_num_sampled_tokens - 1
 
@@ -2329,20 +2355,25 @@ class GPUModelRunner(
     def _gather_mm_embeddings(
         self,
         scheduler_output: "SchedulerOutput",
+        # 调研：shift_computed_tokens 的含义是什么，是在哪里做了 shift
         shift_computed_tokens: int = 0,
     ) -> tuple[list[torch.Tensor], torch.Tensor]:
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
 
+        # 说明：两个 buffer 轮流使用
         # Swap to the other buffer to avoid race condition with previous
         # iteration's async copy that may still be reading from CPU.
         self.is_mm_embed_idx = 1 - self.is_mm_embed_idx
         is_mm_embed_buf = self.is_mm_embed_buffers[self.is_mm_embed_idx]
 
+        # 说明：由多模态 encoder_output 组成的列表
         mm_embeds = list[torch.Tensor]()
         is_mm_embed = is_mm_embed_buf.cpu
+        # 说明：每个 scheduled tokens 对应一个 bool 值，表示该 token 是否是多模态嵌入
         is_mm_embed[:total_num_scheduled_tokens] = False
 
         req_start_idx = 0
+        # 说明：recompute_mrope_positions 后，需要进行同步
         should_sync_mrope_positions = False
         should_sync_xdrope_positions = False
 
@@ -2351,6 +2382,7 @@ class GPUModelRunner(
 
             num_scheduled_tokens = scheduler_output.num_scheduled_tokens[req_id]
             req_state = self.requests[req_id]
+            # 问题：shift_computed_tokens 用于调整多模态位置索引？
             num_computed_tokens = req_state.num_computed_tokens + shift_computed_tokens
 
             for mm_feature in req_state.mm_features:
@@ -2358,6 +2390,7 @@ class GPUModelRunner(
                 start_pos = pos_info.offset
                 num_encoder_tokens = pos_info.length
 
+                # 说明：overlap 说明 num_scheduled_tokens 中包含了多模态编码器输出对应的位置
                 # The encoder output is needed if the two ranges overlap:
                 # [num_computed_tokens,
                 #  num_computed_tokens + num_scheduled_tokens) and
@@ -2375,7 +2408,9 @@ class GPUModelRunner(
                     num_computed_tokens - start_pos + num_scheduled_tokens,
                     num_encoder_tokens,
                 )
+                # 说明：左闭右开区间
                 assert start_idx < end_idx
+                # 说明：左闭右开区间
                 curr_embeds_start, curr_embeds_end = (
                     pos_info.get_embeds_indices_in_range(start_idx, end_idx)
                 )
@@ -2388,12 +2423,15 @@ class GPUModelRunner(
                 encoder_output = self.encoder_cache.get(mm_hash, None)
                 assert encoder_output is not None, f"Encoder cache miss for {mm_hash}."
 
+                # 说明：关注对 encoder output 的不同切片方式
                 if (is_embed := pos_info.is_embed) is not None:
                     is_embed = is_embed[start_idx:end_idx]
                     mm_embeds_item = encoder_output[curr_embeds_start:curr_embeds_end]
                 else:
                     mm_embeds_item = encoder_output[start_idx:end_idx]
 
+                # 说明：req_start_pos + start_idx = req_start_idx + start_pos - num_computed_tokens +
+                # max(num_computed_tokens - start_pos, 0) >= req_start_idx
                 req_start_pos = req_start_idx + start_pos - num_computed_tokens
                 is_mm_embed[req_start_pos + start_idx : req_start_pos + end_idx] = (
                     True if is_embed is None else is_embed
@@ -2423,6 +2461,7 @@ class GPUModelRunner(
             self._calc_mrope_positions(scheduler_output)
             self.mrope_positions.copy_to_gpu(total_num_scheduled_tokens)
 
+        # bug：should_sync_xdrope_positions 的值始终是 False，导致 xdrope_positions 永远不会被计算和同步
         if should_sync_xdrope_positions:
             self._calc_xdrope_positions(scheduler_output)
             self.xdrope_positions.copy_to_gpu(total_num_scheduled_tokens)
@@ -2733,6 +2772,7 @@ class GPUModelRunner(
                 sampling_metadata=sampling_metadata,
             )
 
+        # 说明：self._draft_token_req_ids 在 _copy_draft_token_ids_to_cpu 中设置
         # Update spec_token_ids with real draft tokens from pre step only when
         # output_token_ids is needed (penalties or bad_words are in use).
         if self.use_async_scheduling and self._draft_token_req_ids is not None:
@@ -2875,6 +2915,7 @@ class GPUModelRunner(
             invalid_req_indices,
         )
 
+    # 已阅
     @contextmanager
     def synchronize_input_prep(self):
         if self.prepare_inputs_event is None:
@@ -3165,7 +3206,9 @@ class GPUModelRunner(
                     "it when the requests need prompt logprobs"
                 )
 
+            # 说明：请求数量
             num_reqs = self.input_batch.num_reqs
+            # 说明：请求 ID 列表
             req_ids = self.input_batch.req_ids
             tokens = [scheduler_output.num_scheduled_tokens[i] for i in req_ids]
             num_scheduled_tokens_np = np.array(tokens, dtype=np.int32)
@@ -3416,6 +3459,7 @@ class GPUModelRunner(
         def propose_draft_token_ids(sampled_token_ids):
             assert spec_decode_common_attn_metadata is not None
             with record_function_or_nullcontext("gpu_model_runner: draft"):
+                # 说明：[batch_size, num_speculative_tokens]
                 self._draft_token_ids = self.propose_draft_token_ids(
                     scheduler_output,
                     sampled_token_ids,
@@ -3443,6 +3487,7 @@ class GPUModelRunner(
                 if input_fits_in_drafter:
                     propose_draft_token_ids(sampled_token_ids)
                 elif self.valid_sampled_token_count_event is not None:
+                    # 说明：event is not None 说明开启了 async scheduling，下面调用的是用于处理 GPU 侧采样 token 的方法
                     assert spec_decode_common_attn_metadata is not None
                     next_token_ids, valid_sampled_tokens_count = (
                         self.drafter.prepare_next_token_ids_padded(
@@ -3545,6 +3590,7 @@ class GPUModelRunner(
         draft_token_ids, req_ids = self._get_draft_token_ids_cpu()
         return DraftTokenIds(req_ids, draft_token_ids)
 
+    # 已阅
     def _copy_draft_token_ids_to_cpu(
         self, scheduler_output: "SchedulerOutput", zeros_only: bool = False
     ) -> None:
@@ -3578,6 +3624,8 @@ class GPUModelRunner(
                 self.draft_token_ids_cpu[:num_reqs] = 0
             self.draft_token_ids_event.record()
 
+    # 已阅
+    # 说明：返回 self.draft_token_ids_cpu 中存储的 draft token ids，由 _copy_draft_token_ids_to_cpu 写入
     def _get_draft_token_ids_cpu(self) -> tuple[list[list[int]], list[str]]:
         if isinstance(self._draft_token_ids, list):
             return self._draft_token_ids, self.input_batch.req_ids
@@ -3589,6 +3637,7 @@ class GPUModelRunner(
         self.draft_token_ids_event.synchronize()
         return self.draft_token_ids_cpu[: len(req_ids)].tolist(), req_ids
 
+    # 已阅
     def _copy_valid_sampled_token_count(
         self, next_token_ids: torch.Tensor, valid_sampled_tokens_count: torch.Tensor
     ) -> None:
@@ -3606,6 +3655,7 @@ class GPUModelRunner(
             counts_cpu[: counts.shape[0]].copy_(counts, non_blocking=True)
             self.valid_sampled_token_count_event.record()
 
+        # 说明：shape 为 [batch_size, 1]
         self.input_batch.prev_sampled_token_ids = next_token_ids.unsqueeze(1)
 
     def _get_valid_sampled_token_count(self) -> list[int]:
@@ -3623,6 +3673,8 @@ class GPUModelRunner(
     def propose_draft_token_ids(
         self,
         scheduler_output: "SchedulerOutput",
+        # 说明：类型是 torch.Tensor 时是做了 padding 的 sampled tokens，被拒绝的 tokens 值为 -1，
+        # 类型是 list[list[int]] 时是 valid sampled tokens for each request
         sampled_token_ids: torch.Tensor | list[list[int]],
         sampling_metadata: SamplingMetadata,
         hidden_states: torch.Tensor,
@@ -3674,6 +3726,7 @@ class GPUModelRunner(
         elif spec_config.use_eagle():
             assert isinstance(self.drafter, EagleProposer)
 
+            # 说明：要求 sampled_token_ids 在禁用 pad 时是 cpu 侧的 list，在启用 pad 时是 gpu 侧的 tensor
             if spec_config.disable_padded_drafter_batch:
                 # When padded-batch is disabled, the sampled_token_ids should be
                 # the cpu-side list[list[int]] of valid sampled tokens for each
@@ -3711,6 +3764,7 @@ class GPUModelRunner(
                 )
 
             num_rejected_tokens_gpu = None
+            # 说明：spec_decode_metadata 的创建逻辑在 _calc_spec_decode_metadata 中
             if spec_decode_metadata is None:
                 token_indices_to_sample = None
                 # input_ids can be None for multimodal models.
@@ -3728,6 +3782,8 @@ class GPUModelRunner(
                     token_indices_to_sample = None
                     common_attn_metadata, token_indices = self.drafter.prepare_inputs(
                         common_attn_metadata,
+                        # 说明：disable_padded_drafter_batch 为 True，因此传入的 sampled_token_ids 是一个 list，
+                        # 表示 valid sampled tokens for each request
                         sampled_token_ids,
                         spec_decode_metadata.num_draft_tokens,
                     )
@@ -3751,6 +3807,7 @@ class GPUModelRunner(
                         valid_sampled_tokens_count,
                     )
                     total_num_tokens = common_attn_metadata.num_actual_tokens
+                    # 理解：传入完整的 input_ids，包括 rejected tokens 和 padding 部分
                     # When padding the batch, token_indices is just a range
                     target_token_ids = self.input_ids.gpu[:total_num_tokens]
                     target_positions = self._get_positions(total_num_tokens)
@@ -4925,6 +4982,11 @@ class GPUModelRunner(
             )
         self.maybe_remove_all_loras(self.lora_config)
 
+    # 已阅
+    # 根据 kv_cache_config 初始化 attention backend；
+    # attention metadata builders 是在调方法后续通过调用 initialize_metadata_builders 来创建的，
+    # 不在该方法中创建；方法中对 _check_and_update_cudagraph_mode 进行了调用，为 attention metadata builders
+    # 的创建做准备工作
     def initialize_attn_backend(self, kv_cache_config: KVCacheConfig) -> None:
         """
         Initialize the attention backends and attention metadata builders.
@@ -4935,6 +4997,9 @@ class GPUModelRunner(
             attn_backend: type[AttentionBackend]
             kv_cache_spec: KVCacheSpec
 
+        # 说明：tuple[0]，将每个 kv cache group 组内的层根据对应的 attention backend 进行分组
+        # 分组的时候使用 full case name 作为 key，返回的时候生成 AttentionGroupKey 实例
+        # tuple[1]，返回该组内所有使用到的 attention backend 类型的集合
         def get_attn_backends_for_group(
             kv_cache_group_spec: KVCacheGroupSpec,
         ) -> tuple[dict[AttentionGroupKey, list[str]], set[type[AttentionBackend]]]:
@@ -4949,6 +5014,7 @@ class GPUModelRunner(
             # attention backend subclasses (e.g. ChunkedLocalAttention) unless
             # they are cached correctly, there will be different objects per
             # layer.
+            # 补充：注意是使用 full case name 去重
             for layer_name in kv_cache_group_spec.layer_names:
                 attn_backend = layers[layer_name].get_attn_backend()
 
@@ -4963,6 +5029,8 @@ class GPUModelRunner(
                 if isinstance(layer_kv_cache_spec, UniformTypeKVCacheSpecs):
                     layer_kv_cache_spec = layer_kv_cache_spec.kv_cache_specs[layer_name]
                 key = (full_cls_name, layer_kv_cache_spec)
+                # 说明：(full_cls_name, layer_kv_cache_spec) --> 
+                # {'attn_backend': type of attention backend, 'kv_cache_spec': layer_kv_cache_spec}
                 attn_backends[key] = AttentionGroupKey(
                     attn_backend, layer_kv_cache_spec
                 )
@@ -4972,6 +5040,8 @@ class GPUModelRunner(
                 set(group_key.attn_backend for group_key in attn_backends.values()),
             )
 
+        # 补充：kv_cache_group_id 就是 index
+        # 使用上面方法对 kv cache group 分组的结果，每个组创建一个对应的 AttentionGroup 实例
         def create_attn_groups(
             attn_backends_map: dict[AttentionGroupKey, list[str]],
             kv_cache_group_id: int,
@@ -4996,6 +5066,8 @@ class GPUModelRunner(
             attention_backend_list.append(attn_backends[1])
 
         # Resolve cudagraph_mode before actually initialize metadata_builders
+        # 说明：因为在 AttentionMetadataBuilder 的构建函数中可能会用到 cudagraph_mode，
+        # 所以需要提前确定好 cudagraph_mode
         self._check_and_update_cudagraph_mode(
             attention_backend_list, kv_cache_config.kv_cache_groups
         )
@@ -5006,6 +5078,9 @@ class GPUModelRunner(
         for i, attn_backend_map in enumerate(attention_backend_maps):
             self.attn_groups.append(create_attn_groups(attn_backend_map, i))
 
+    # 已阅
+    # 说明：为每个 AttentionGroup 创建对应的 1 或 2 个 metadata builders；
+    # 启用 dual batch overlap 时，会创建 2 个
     def initialize_metadata_builders(
         self, kv_cache_config: KVCacheConfig, kernel_block_sizes: list[int]
     ) -> None:
@@ -5020,6 +5095,8 @@ class GPUModelRunner(
                     kernel_block_sizes[kv_cache_group_id]
                     if kv_cache_group_id < len(kernel_block_sizes)
                     else None,
+                    # 说明：关注 dual batch overlap
+                    # https://docs.vllm.ai/en/stable/design/dbo/
                     num_metadata_builders=1
                     if not self.parallel_config.use_ubatching
                     else self.parallel_config.num_ubatches,
@@ -5027,8 +5104,14 @@ class GPUModelRunner(
         # Calculate reorder batch threshold (if needed)
         # Note (tdoublep): do this *after* constructing builders,
         # because some of them change the threshold at init time.
+        # 说明：依赖 AttentionGroup 内部的 metadata builders 中的 
+        # reorder_batch_threshold 值，需要等它们初始化完成再计算
         self.calculate_reorder_batch_threshold()
 
+    # 已阅
+    # 说明：根据每个 AttentionMetadataBuilder 的 cudagraph support 情况，
+    # 来决定最终的 cudagraph_mode，并更新 compilation_config 中的 cudagraph_mode；
+    # 触发 cudagraph 分发 key 的初始化 
     def _check_and_update_cudagraph_mode(
         self,
         attention_backends: list[set[type[AttentionBackend]]],
@@ -5040,6 +5123,8 @@ class GPUModelRunner(
         Then initialize the cudagraph_dispatcher based on the resolved
         cudagraph_mode.
         """
+        # 说明：找到所有 attention backend 中对 cudagraph 最低的支持级别，
+        # 以及对应的 backend 名称
         min_cg_support = AttentionCGSupport.ALWAYS
         min_cg_backend_name = None
 
@@ -5077,6 +5162,7 @@ class GPUModelRunner(
                 raise ValueError(msg)
 
             # attempt to resolve the full cudagraph related mode
+            # 说明：相当于将 (full, full) 降级为 (full, piecewise) 或 (full, none)
             if self.compilation_config.splitting_ops_contain_attention():
                 msg += "; setting cudagraph_mode=FULL_AND_PIECEWISE"
                 cudagraph_mode = self.compilation_config.cudagraph_mode = (
@@ -5122,6 +5208,9 @@ class GPUModelRunner(
 
         # check that if we are doing spec-decode + decode full-cudagraphs it is
         # supported
+        # 说明：如果使用了 spec-decode（uniform_decode_query_len > 1），
+        # 并且 decode 阶段使用了 full cudagraph，但 attention backend 不支持 uniform batch，
+        # 则需要降级 cudagraph_mode
         if (
             cudagraph_mode.decode_mode() == CUDAGraphMode.FULL
             and self.uniform_decode_query_len > 1
@@ -5165,13 +5254,17 @@ class GPUModelRunner(
         # Will be removed in the near future when we have separate cudagraph capture
         # sizes for decode and mixed prefill-decode.
         if (
+            # 说明：前两行判断 dedicated decode cudagraphs
             cudagraph_mode.decode_mode() == CUDAGraphMode.FULL
             and cudagraph_mode.separate_routine()
+            # 说明：第三行判断 spec-decode is enabled
             and self.uniform_decode_query_len > 1
         ):
             self.compilation_config.adjust_cudagraph_sizes_for_spec_decode(
                 self.uniform_decode_query_len, self.parallel_config.tensor_parallel_size
             )
+            # 说明：adjust_cudagraph_sizes_for_spec_decode 会修改
+            # self.compilation_config.cudagraph_capture_sizes
             capture_sizes = self.compilation_config.cudagraph_capture_sizes
             self.cudagraph_batch_sizes = (
                 capture_sizes if capture_sizes is not None else []
@@ -5184,10 +5277,15 @@ class GPUModelRunner(
             cudagraph_mode, self.uniform_decode_query_len
         )
 
+    # 已阅
+    # 说明：将所有 AttentionGroup 的 MetadataBuilder 中的 reorder_batch_threshold 取最小值，
+    # 作为整体的 reorder_batch_threshold；
+    # Attention 后端应该在能力上支持比它们请求的更低的阈值，只是这样可能会有性能损失，因为更小的阈值导致
+    # 它们将原本视为解码的部分请求视为了预填充
     def calculate_reorder_batch_threshold(self) -> None:
         """
         Choose the minimum reorder batch threshold from all attention groups.
-        Backends should be able to support lower threshold then what they request
+        Backends should be able to support lower threshold than what they request
         just may have a performance penalty due to that backend treating decodes
         as prefills.
         """
@@ -5202,8 +5300,11 @@ class GPUModelRunner(
         if len(reorder_batch_thresholds) == 0:
             self.reorder_batch_threshold = None
             return
+        # 设置为所有 AttentionGroup 中最小的 reorder_batch_threshold
         self.reorder_batch_threshold = reduce(min_none_high, reorder_batch_thresholds)  # type: ignore[assignment]
 
+    # 已阅
+    # 利用每个 kv cache group 的 block size 和对应的 attention backends，选择一个所有 backend 都支持的 block size
     @staticmethod
     def select_common_block_size(
         kv_manager_block_size: int, attn_groups: list[AttentionGroup]
@@ -5262,6 +5363,9 @@ class GPUModelRunner(
         # backends i, and b a factor of kv_manager_block_size, then
         # kv_manager_block_size also satisfies MultipleOf(x_i) for all i. We will
         # return kv_manager_block_size in case 1.
+        # 说明：上面的证明是为了解释我们不需要考虑 MultipleOf 格式
+        # 在没有 `int`-format 时，kv_manager_block_size 在 case 1 就会返回
+        # 在有 `int`-format 时，当存在 b 时，一定是因为 kv_manager_block_size 与 supported_size 不相等才没有在 case 1 返回
         all_int_supported_sizes = set(
             supported_size
             for backend in backends
@@ -5276,6 +5380,7 @@ class GPUModelRunner(
                 return supported_size
         raise ValueError(f"No common block size for {kv_manager_block_size}. ")
 
+    # 已阅
     def may_reinitialize_input_batch(
         self, kv_cache_config: KVCacheConfig, kernel_block_sizes: list[int]
     ) -> None:
@@ -5288,20 +5393,25 @@ class GPUModelRunner(
             kv_cache_config: The KV cache configuration.
             kernel_block_sizes: The kernel block sizes for each KV cache group.
         """
+        # 说明：逻辑 block_size 列表
         block_sizes = [
             kv_cache_group.kv_cache_spec.block_size
             for kv_cache_group in kv_cache_config.kv_cache_groups
             if not isinstance(kv_cache_group.kv_cache_spec, EncoderOnlyAttentionSpec)
         ]
 
+        # 说明：input_batch 最初是根据单一 self.cache_config.block_size 初始化的
         if block_sizes != [self.cache_config.block_size] or kernel_block_sizes != [
             self.cache_config.block_size
         ]:
+            # 说明：当启用了 CPU weight offloading 时，不允许重新初始化 input_batch，
+            # 说明此时 block_sizes 和 kernel_block_sizes 必须相等且只能是单一值
             assert self.cache_config.cpu_offload_gb == 0, (
                 "Cannot re-initialize the input batch when CPU weight "
                 "offloading is enabled. See https://github.com/vllm-project/vllm/pull/18298 "  # noqa: E501
                 "for more details."
             )
+            # 说明：重新初始化 input_batch，内部包含了 block_tables 的初始化
             self.input_batch = InputBatch(
                 max_num_reqs=self.max_num_reqs,
                 max_model_len=max(self.max_model_len, self.max_encoder_len),
@@ -5318,6 +5428,7 @@ class GPUModelRunner(
                 num_speculative_tokens=self.num_spec_tokens,
             )
 
+    # 已阅
     def _allocate_kv_cache_tensors(
         self, kv_cache_config: KVCacheConfig
     ) -> dict[str, torch.Tensor]:
@@ -5332,6 +5443,7 @@ class GPUModelRunner(
             corresponding memory buffer for KV cache.
         """
         kv_cache_raw_tensors: dict[str, torch.Tensor] = {}
+        # 说明：一个 KVCacheTensor 对应一个 tensor，KVCacheTensor 中的所有层共享该 tensor
         for kv_cache_tensor in kv_cache_config.kv_cache_tensors:
             tensor = torch.zeros(
                 kv_cache_tensor.size, dtype=torch.int8, device=self.device
@@ -5350,15 +5462,20 @@ class GPUModelRunner(
         )
         return kv_cache_raw_tensors
 
+    # 已阅
     def _attn_group_iterator(self) -> Iterator[AttentionGroup]:
         return itertools.chain.from_iterable(self.attn_groups)
 
+    # 已阅
     def _kv_cache_spec_attn_group_iterator(self) -> Iterator[AttentionGroup]:
         if not self.kv_cache_config.kv_cache_groups:
             return
         for attn_groups in self.attn_groups:
             yield from attn_groups
 
+    # 已阅
+    # 补充：关注 virtual block splitting
+    # 说明：每个 KVCacheGroupSpec 维度的 kernel_block_size 可能不一样
     def _prepare_kernel_block_sizes(self, kv_cache_config: KVCacheConfig) -> list[int]:
         """
         Generate kernel_block_sizes that matches each block_size.
@@ -5381,11 +5498,14 @@ class GPUModelRunner(
                 # Pick an arbitrary one to dispatch.
                 kv_cache_spec = next(iter(kv_cache_spec.kv_cache_specs.values()))
             if isinstance(kv_cache_spec, EncoderOnlyAttentionSpec):
+                # 说明：EncoderOnlyAttentionSpec 被添加为最后一个 group 了，
+                # 所以 continue 不会导致 kernel_block_size 和 kv_cache_groups 对应不上
                 continue
             elif isinstance(kv_cache_spec, AttentionSpec):
                 # This is an attention backend that supports virtual
                 # block splitting. Get the supported block sizes from
                 # all backends in the group.
+                # 理解：意思是因为支持 virtual block splitting，所以需要选择一个所有注意力后端都支持的 block size
                 attn_groups = self.attn_groups[kv_cache_gid]
                 kv_manager_block_size = kv_cache_group.kv_cache_spec.block_size
                 selected_kernel_size = self.select_common_block_size(
@@ -5402,6 +5522,7 @@ class GPUModelRunner(
                 )
         return kernel_block_sizes
 
+    # 已阅（除了 MambaSpec）
     def _reshape_kv_cache_tensors(
         self,
         kv_cache_config: KVCacheConfig,
@@ -5432,16 +5553,28 @@ class GPUModelRunner(
             for layer_name in group.layer_names:
                 if layer_name in self.runner_only_attn_layers:
                     continue
+                # 说明：raw_tensor 可能是被多层共享的
+                # 问题：具体是如何共享的？不会出现冲突吗？
+                # 理解：共享一个 tensor 的不同层的 page_size_bytes 都是相同的（虽然内部 block_size 可能不一样）；
+                # 共享一个 tensor 的不同层的 kernel_block_size 可能是不一样的；
+                # 虽然 tensor 的维度使用了（可能）更小的 kernel_block_size 而没有使用 kv_cache_spec 中的 block_size，
+                # 但 kv_cache_spec 一直保持没变（相当于逻辑 block 的大小没变），
+                # 只不过是在访问 tensor 时，block 起点可能是在 page 内部
+                # 不知道这是不是所谓的 virtual block splitting
                 raw_tensor = kv_cache_raw_tensors[layer_name]
                 assert raw_tensor.numel() % kv_cache_spec.page_size_bytes == 0
+                # 说明：逻辑 block 的数量
                 num_blocks = raw_tensor.numel() // kv_cache_spec.page_size_bytes
                 if isinstance(kv_cache_spec, AttentionSpec):
                     has_attn = True
                     num_blocks_per_kv_block = (
                         kv_cache_spec.block_size // kernel_block_size
                     )
+                    # 说明：物理 block 的数量
                     kernel_num_blocks = num_blocks * num_blocks_per_kv_block
 
+                    # 说明：传入根据 kernel_block_size 重新计算的 kernel_num_blocks，
+                    # 虽然 page_size_bytes 变小了，但相应的 kernel_num_blocks 变大了，相乘后的结果没有变
                     kv_cache_shape = attn_backend.get_kv_cache_shape(
                         kernel_num_blocks,
                         kernel_block_size,
@@ -5460,14 +5593,19 @@ class GPUModelRunner(
                     # backend. We first obtain the generic kv cache shape and
                     # then permute it according to the stride order which could
                     # result in a non-contiguous tensor.
+                    # 说明：物理内存的维度顺序
                     kv_cache_shape = tuple(
                         kv_cache_shape[i] for i in kv_cache_stride_order
                     )
                     # Maintain original KV shape view.
+                    # 说明：用于 permute，可以还原为最初从 get_kv_cache_shape 获取的 kv_cache_shape
                     inv_order = [
                         kv_cache_stride_order.index(i)
                         for i in range(len(kv_cache_stride_order))
                     ]
+                    # 说明：多层共享相同的内存，但每层有自己的视图
+                    # 问题：如果避免不同层之间冲突的
+                    # 理解：不同层的 page_size_bytes 都是相同的，
                     kv_caches[layer_name] = (
                         kv_cache_raw_tensors[layer_name]
                         .view(dtype)
@@ -5506,6 +5644,7 @@ class GPUModelRunner(
 
         return kv_caches
 
+    # 已阅（重点理解一下 as_strided_ 函数）
     def _update_hybrid_attention_mamba_layout(
         self, kv_caches: dict[str, torch.Tensor]
     ) -> None:
@@ -5528,11 +5667,13 @@ class GPUModelRunner(
                         f"a tensor of shape {kv_cache.shape}"
                     )
                     hidden_size = kv_cache.shape[2:].numel()
+                    # 说明：shape 不变，只改变 stride，实现存储布局的转换
                     kv_cache.as_strided_(
                         size=kv_cache.shape,
                         stride=(hidden_size, 2 * hidden_size, *kv_cache.stride()[2:]),
                     )
 
+    # 已阅
     def initialize_kv_cache_tensors(
         self, kv_cache_config: KVCacheConfig, kernel_block_sizes: list[int]
     ) -> dict[str, torch.Tensor]:
@@ -5551,6 +5692,8 @@ class GPUModelRunner(
         # Try creating KV caches optimized for kv-connector transfers
         cache_dtype = self.cache_config.cache_dtype
         if self.use_uniform_kv_cache(self.attn_groups, cache_dtype):
+            # 说明：cross_layers_kv_cache 指的是：对于给定 block number，
+            # 所有层的 KV Cache 数据将是连续存储的
             kv_caches, cross_layers_kv_cache, attn_backend = (
                 self.allocate_uniform_kv_caches(
                     kv_cache_config,
@@ -5565,6 +5708,7 @@ class GPUModelRunner(
         else:
             # Fallback to the general case
             # Initialize the memory buffer for KV cache
+            # 说明：在相同 KVCacheTensor 中的层共享同一块内存
             kv_cache_raw_tensors = self._allocate_kv_cache_tensors(kv_cache_config)
 
             # Change the memory buffer to the desired shape
@@ -5577,6 +5721,8 @@ class GPUModelRunner(
             logger.debug("%s reuses KV cache of %s", layer_name, target_layer_name)
             kv_caches[layer_name] = kv_caches[target_layer_name]
 
+        # 理解：每层 Attention 模块的数量
+        # 注意：LongCat Flash Attention 有两个 Attention 模块，参见 https://arxiv.org/html/2509.01322v1#S2
         num_attn_module = (
             2 if self.model_config.hf_config.model_type == "longcat_flash" else 1
         )
@@ -5588,6 +5734,7 @@ class GPUModelRunner(
         )
         return kv_caches
 
+    # 已阅
     def maybe_add_kv_sharing_layers_to_kv_cache_groups(
         self, kv_cache_config: KVCacheConfig
     ) -> None:
@@ -5610,12 +5757,17 @@ class GPUModelRunner(
             # similar KV sharing setups, only the layers that generate KV caches
             # are involved in the prefill phase, enabling prefill to early exit.
             attn_layers = get_layers_from_vllm_config(self.vllm_config, Attention)
+            # 理解：从后向前看，prefill 阶段跳过后面的共享层，提前退出
             for layer_name in reversed(attn_layers):
                 if layer_name in self.shared_kv_cache_layers:
                     self.kv_sharing_fast_prefill_eligible_layers.add(layer_name)
                 else:
                     break
 
+    # 已阅
+    # 遗留问题：
+    # 1. kv_cache 被绑定后具体是如何使用的
+    # 2. 不同层共享同一块 kv_cache 内存时，如何避免冲突
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         """
         Initialize KV cache based on `kv_cache_config`.
@@ -5633,13 +5785,25 @@ class GPUModelRunner(
         # backends for that group only supports block_size 64, we will return
         # kernel_block_size 64 and split the 256-token-block to 4 blocks with 64
         # tokens each.
+        # 说明：每个 KVCacheGroupSpec 维度的 kernel_block_size 可能不一样
+        # kv_cache_config 中的 block_size 是逻辑 block 的大小，下面方法返回的
+        # kernel_block_size 是物理 block 的大小
+        # 在后面使用 block_size 的逻辑中，会同时传入逻辑 block_size 和物理 block_size
         kernel_block_sizes = self._prepare_kernel_block_sizes(kv_cache_config)
 
         # create metadata builders
         self.initialize_metadata_builders(kv_cache_config, kernel_block_sizes)
 
         # Reinitialize need to after initialize_attn_backend
+        # 说明：初始时，input_batch 是基于 cache_config 中的 block_size 初始化的，
+        # 现在基于真正的 kernel_block_sizes 来进行初始化
+        # 每个 KVCacheGroupSpec 维度的 kernel_block_size 可能不一样，
+        # 即每个 KVCacheGroupSpec 对应的 BlockTable 的 block_size 可能不一样
+        # 说明：先通过调用 may_reinitialize_input_batch 创建 block tables，
+        # 再通过调用 initialize_kv_cache_tensors 创建 kv cache tensors，
+        # 每个 KV Cache Group 对应一个 block table
         self.may_reinitialize_input_batch(kv_cache_config, kernel_block_sizes)
+        # 说明：创建 KV cache 张量，根据需要做 reshape，最后并将其绑定到 static_forward_context 中
         kv_caches = self.initialize_kv_cache_tensors(
             kv_cache_config, kernel_block_sizes
         )
@@ -5681,6 +5845,8 @@ class GPUModelRunner(
             vllm_config=self.vllm_config,
         )
 
+    # 已阅
+    # 说明：为 encoder-only attention 层新增 KV cache group spec，限制最多只能新增一个
     def may_add_encoder_only_layers_to_kv_cache_config(self) -> None:
         """
         Add encoder-only layers to the KV cache config.
@@ -5707,6 +5873,7 @@ class GPUModelRunner(
                 KVCacheGroupSpec(layer_names=layer_names, kv_cache_spec=spec)
             )
 
+    # 已阅
     def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
         """
         Generates the KVCacheSpec by parsing the kv cache format from each
@@ -5719,12 +5886,13 @@ class GPUModelRunner(
             return {}
         kv_cache_spec: dict[str, KVCacheSpec] = {}
         layer_type = cast(type[Any], AttentionLayerBase)
+        # 补充：Extract KV cache specs from all attention layers
         attn_layers = get_layers_from_vllm_config(self.vllm_config, layer_type)
         for layer_name, attn_module in attn_layers.items():
             if isinstance(attn_module, Attention) and (
                 kv_tgt_layer := attn_module.kv_sharing_target_layer_name
             ):
-                # The layer doesn't need its own KV cache and will use that of
+                # This layer doesn't need its own KV cache and will use that of
                 # the target layer. We skip creating a KVCacheSpec for it, so
                 # that KV cache management logic will act as this layer does
                 # not exist, and doesn't allocate KV cache for the layer. This

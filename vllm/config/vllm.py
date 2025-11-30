@@ -336,6 +336,7 @@ class VllmConfig:
         ]
         return hash_str
 
+    # 已阅
     def pad_for_cudagraph(self, batch_size: int) -> int:
         # if batch_size > self.compilation_config.max_cudagraph_capture_size,
         # it should raise an IndexError.
@@ -1449,6 +1450,7 @@ def get_current_vllm_config_or_none() -> VllmConfig | None:
 T = TypeVar("T")
 
 
+# 已阅
 def get_layers_from_vllm_config(
     vllm_config: VllmConfig,
     layer_type: type[T],

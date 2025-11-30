@@ -12,12 +12,15 @@ from vllm.utils.torch_utils import current_stream
 
 logger = init_logger(__name__)
 
+# 说明：threading.get_ident() -> UBatchContext.id，id 是 _CURRENT_CONTEXTS 的索引
 _THREAD_ID_TO_CONTEXT: dict = {}
 # Here we hardcode the number of microbatches to 2 for default.
 _NUM_UBATCHES: int = 2
 _CURRENT_CONTEXTS: list[Optional["UBatchContext"]] = []
 
 
+# 待看
+# 两个 ubatch 线程的同步机制
 class UBatchContext:
     """
     Context manager for micro-batching synchronization using threading events.
@@ -148,16 +151,21 @@ class UBatchContext:
         self._wait_comm_done()
 
 
+# 已阅
 def dbo_enabled() -> bool:
     return len(_THREAD_ID_TO_CONTEXT) > 0
 
 
+# 已阅
 def dbo_current_ubatch_id() -> int:
     if len(_THREAD_ID_TO_CONTEXT) == 0:
         return 0
+    # 说明：get_ident 返回线程的唯一标识符（非 0）
     return _THREAD_ID_TO_CONTEXT[threading.get_ident()]
 
 
+# 已阅
+# 说明：注册当前线程对应的 UBatchContext 的方法
 def _register_ubatch_function(func):
     def wrapper(*args, **kwargs):
         if len(_THREAD_ID_TO_CONTEXT) > 0:

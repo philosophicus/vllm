@@ -27,6 +27,7 @@ def is_cloud_storage(model_or_path: str) -> bool:
     return is_s3(model_or_path) or is_gcs(model_or_path)
 
 
+# 已阅
 def modelscope_list_repo_files(
     repo_id: str,
     revision: str | None = None,
@@ -95,6 +96,7 @@ def maybe_model_redirect(model: str) -> str:
     return model
 
 
+# 已阅
 def parse_safetensors_file_metadata(path: str | PathLike) -> dict[str, Any]:
     with open(path, "rb") as f:
         length_of_metadata = struct.unpack("<Q", f.read(8))[0]

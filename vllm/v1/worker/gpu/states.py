@@ -13,6 +13,7 @@ from vllm.v1.worker.gpu.buffer_utils import StagedWriteTensor, UvaBackedTensor
 NO_LORA_ID = 0
 
 
+# 说明：维护每个请求的状态，包括请求的各种参数和中间结果
 class RequestState:
     def __init__(
         self,
@@ -30,15 +31,19 @@ class RequestState:
         self.vocab_size = vocab_size
         self.device = device
 
+        # 问题：请求 ID 和索引的映射，索引在 BatchUpdate 中会用到？
         self.req_id_to_index: dict[str, int] = {}
         self.index_to_req_id: dict[int, str] = {}
+        # 说明：空闲位置索引列表
         self.free_indices = list(range(max_num_reqs))
         self.extra_data: dict[str, ExtraData] = {}
 
+        # 说明：请求的 prompt_len 是固定不变的，只在首次添加 request 时设置
         self.prompt_len = np.zeros(self.max_num_reqs, dtype=np.int32)
         # NOTE(woosuk): This tensor can be extremely large (e.g., several GBs)
         # depending on the configured max_num_reqs and max_model_len.
         # To save GPU memory, we use UVA instead of GPU for this tensor.
+        # 说明：prefill_token_ids = prompt_token_ids + output_token_ids
         self.prefill_token_ids = StagedWriteTensor(
             (self.max_num_reqs, self.max_model_len),
             dtype=torch.int32,
@@ -68,6 +73,7 @@ class RequestState:
             dtype=torch.int64,
             device=device,
         )
+        # 说明：记录下一个需要 prefill 的 token id，原因是本轮没有完成 prefill，需要在下一轮继续
         self.next_prefill_tokens = torch.zeros(
             self.max_num_reqs, dtype=torch.int32, device=device
         )
@@ -82,6 +88,7 @@ class RequestState:
     def num_reqs(self) -> int:
         return len(self.req_id_to_index)
 
+    # 已阅
     def add_request(
         self,
         req_id: str,
@@ -113,6 +120,7 @@ class RequestState:
             self.lora_ids[req_idx] = NO_LORA_ID
 
         # For now, only support prompt logprobs for the prompt tokens.
+        # 说明：整型变量转换为布尔值
         needs_prompt_logprobs = sampling_params.prompt_logprobs is not None
         self.needs_prompt_logprobs[req_idx] = needs_prompt_logprobs
 
@@ -121,6 +129,7 @@ class RequestState:
         self.prefill_token_ids.apply_write()
         self.num_computed_tokens.apply_write()
 
+    # 已阅
     def remove_request(self, req_id: str) -> None:
         self.extra_data.pop(req_id, None)
         req_idx = self.req_id_to_index.pop(req_id, None)
@@ -138,9 +147,11 @@ class RequestState:
     ) -> tuple[tuple[int, ...], tuple[int, ...], set[LoRARequest]]:
         lora_ids = self.lora_ids[idx_mapping]
         prompt_lora_mapping = tuple(lora_ids)
+        # 说明：根据 num_scheduled_tokens 扩展 lora_ids，使得每个 token 都有对应的 lora_id
         token_lora_mapping = tuple(lora_ids.repeat(num_scheduled_tokens))
 
         active_lora_requests: set[LoRARequest] = set()
+        # 说明：req_ids 为排序后的请求 ID 列表，与 idx_mapping 一一对应
         for req_id in req_ids:
             lora_request = self.extra_data[req_id].lora_request
             if lora_request is not None:
@@ -148,6 +159,7 @@ class RequestState:
         return prompt_lora_mapping, token_lora_mapping, active_lora_requests
 
 
+# 已阅
 @dataclass
 class ExtraData:
     lora_request: LoRARequest | None

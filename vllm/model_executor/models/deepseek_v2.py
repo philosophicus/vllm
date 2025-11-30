@@ -570,6 +570,7 @@ class DeepseekV2Attention(nn.Module):
         return output
 
 
+# 已阅
 class DeepseekV32IndexerCache(torch.nn.Module, AttentionLayerBase):
     def __init__(
         self, head_dim: int, dtype: torch.dtype, prefix: str, cache_config: CacheConfig
@@ -599,10 +600,15 @@ class DeepseekV32IndexerCache(torch.nn.Module, AttentionLayerBase):
         return DeepseekV32IndexerBackend
 
 
+# 已阅
+# 说明：Deepseek Sparse Attention - Lightning Indexer 实现
+# 从 kv cache 中选取 topk tokens，为了后续进行 attention 计算
 def sparse_attn_indexer(
     hidden_states: torch.Tensor,
     k_cache_prefix: str,
+    # 说明：shape 为 [num_blocks, block_size, _]
     kv_cache: torch.Tensor,
+    # 说明：传入的就是已量化的 q
     q_fp8: torch.Tensor,
     k: torch.Tensor,
     weights: torch.Tensor,
@@ -626,6 +632,7 @@ def sparse_attn_indexer(
             ((total_seq_lens, 4), torch.uint8),
         )
 
+        # 说明：dummy run，调用 fake impl
         return sparse_attn_indexer_fake(
             hidden_states,
             k_cache_prefix,
@@ -656,6 +663,8 @@ def sparse_attn_indexer(
         scale_fmt,
     )
 
+    # 说明：lightning indexer 要选出 topk tokens
+    # hidden_states 的 shape 是 (num_tokens, hidden_dim)
     topk_indices_buffer[: hidden_states.shape[0]] = -1
     if has_prefill:
         prefill_metadata = attn_metadata.prefill
@@ -668,6 +677,7 @@ def sparse_attn_indexer(
         )
 
         for chunk in prefill_metadata.chunks:
+            # 说明：每次都是从头复用 workspace
             k_fp8 = k_fp8_full[: chunk.total_seq_lens]
             k_scale = k_scale_full[: chunk.total_seq_lens]
             ops.cp_gather_indexer_k_quant_cache(
@@ -677,6 +687,8 @@ def sparse_attn_indexer(
                 chunk.block_table,
                 chunk.cu_seq_lens,
             )
+            # 说明：因为对 k 做了 cp_gather，所以这里使用 fp8_mqa_logits，不适用 fp8_paged_mqa_logits
+            # 虽然没有分页，但 q 是 chunked 的
             fp8_mqa_logits_func = fp8_mqa_logits
             if current_platform.is_rocm():
                 from vllm.v1.attention.ops.rocm_aiter_mla_sparse import (
@@ -684,6 +696,7 @@ def sparse_attn_indexer(
                 )
 
                 fp8_mqa_logits_func = rocm_fp8_mqa_logits
+            # 说明：计算 lightning indexer 的 indexer scores，可以根据 fp8_mqa_logits_torch 理解实现逻辑
             logits = fp8_mqa_logits_func(
                 q_fp8[chunk.token_start : chunk.token_end],
                 (k_fp8, k_scale.view(torch.float32)),
@@ -736,6 +749,8 @@ def sparse_attn_indexer(
         next_n = padded_q_fp8_decode_tokens.shape[1]
         assert batch_size == decode_metadata.seq_lens.shape[0]
         num_padded_tokens = batch_size * next_n
+        # 说明：没有对 k 做 gather 操作，所以这里使用 paged 版本的 logits 计算函数，
+        # 逐个 block（分页）读取 kv_cache 计算 logits
         fp8_paged_mqa_logits_func = fp8_paged_mqa_logits
         if current_platform.is_rocm():
             from vllm.v1.attention.ops.rocm_aiter_mla_sparse import (
@@ -886,6 +901,7 @@ class Indexer(nn.Module):
             k, [self.rope_dim, self.head_dim - self.rope_dim], dim=-1
         )
 
+        # 说明：论文中的 partially apply RoPE
         q_pe, k_pe = rotary_emb(positions, q_pe, k_pe.unsqueeze(1))
         # Note: RoPE (NeoX) can introduce extra leading dimensions during compilation
         # so we need to reshape back to token-flattened shapes
@@ -907,8 +923,11 @@ class Indexer(nn.Module):
         q_fp8 = q_fp8.view(-1, self.n_head, self.head_dim)
         q_scale = q_scale.view(-1, self.n_head, 1)
 
+        # 说明：weights shape 是 [num_tokens, n_head]
         weights, _ = self.weights_proj(hidden_states)
         weights = (
+            # 说明：注意这里 weights 包含 q_scale 和 softmax_scale，同时又乘以了一个 self.n_head**-0.5
+            # https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp/blob/main/inference/model.py#L478
             weights.unsqueeze(-1) * q_scale * self.softmax_scale * self.n_head**-0.5
         )
         weights = weights.squeeze(-1)

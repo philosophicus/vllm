@@ -20,6 +20,8 @@ _CONCH_SUPPORTED_WEIGHT_TYPES: Final = [
 _CONCH_SUPPORTED_GROUP_SIZES: Final = [-1, 128]
 
 
+# 说明：
+# 参考：https://github.com/stackav-oss/conch
 class ConchLinearKernel(MPLinearKernel):
     @classmethod
     def get_min_capability(cls) -> int:

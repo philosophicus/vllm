@@ -115,6 +115,7 @@ def register_model_loader(load_format: str):
     return _wrapper
 
 
+# 已阅
 def get_model_loader(load_config: LoadConfig) -> BaseModelLoader:
     """Get a model loader based on the load format."""
     load_format = load_config.load_format
@@ -123,6 +124,7 @@ def get_model_loader(load_config: LoadConfig) -> BaseModelLoader:
     return _LOAD_FORMAT_TO_MODEL_LOADER[load_format](load_config)
 
 
+# 已阅
 def get_model(
     *, vllm_config: VllmConfig, model_config: ModelConfig | None = None
 ) -> nn.Module:

@@ -64,6 +64,9 @@ from vllm.utils.collection_utils import is_list_of
 logger = init_logger(__name__)
 
 
+# 已阅
+# 说明：对于 FusedMoE 层，尝试覆盖配置后，返回量化方法实例
+# 说明：可以对照 get_linear_quant_method 一起看
 def get_moe_quant_method(
     config: "GPTQMarlinConfig",
     layer: torch.nn.Module,
@@ -73,6 +76,9 @@ def get_moe_quant_method(
     cloned_config = deepcopy(config)
 
     if isinstance(layer, FusedMoE):
+        # 说明：False 表示没有 positive match，跳过量化；
+        # None 表示 positive match w/o override；
+        # 非 None 表示 positive match w/ override
         # False = skip module, None = no override, else = Positive match
         if (
             get_dynamic_override(  # noqa: E712
@@ -91,6 +97,7 @@ def get_moe_quant_method(
     return None
 
 
+# 已阅
 class GPTQMarlinConfig(QuantizationConfig):
     """Config class for GPTQ Marlin"""
 
@@ -258,6 +265,7 @@ class GPTQMarlinConfig(QuantizationConfig):
             )
             if moe_quant_method is None:
                 return None
+            # 说明：从实现看，返回值与 prefix 无关，只取决于环境变量 VLLM_MARLIN_INPUT_DTYPE
             moe_quant_method.input_dtype = get_marlin_input_dtype(prefix)
             return moe_quant_method
 
@@ -290,6 +298,7 @@ class GPTQMarlinConfig(QuantizationConfig):
         if (num_bits, sym) not in cls.TYPE_MAP:
             return False
 
+        # 说明：GPTQ 的 has_zp 值为 False，对应 AWQ 的 has_zp 为 True
         return check_marlin_supported(
             quant_type=cls.TYPE_MAP[(num_bits, sym)], group_size=group_size
         )
@@ -334,6 +343,7 @@ class GPTQMarlinLinearMethod(LinearMethodBase):
 
     def __init__(self, quant_config: GPTQMarlinConfig) -> None:
         self.quant_config = quant_config
+        # 说明：在 get_linear_quant_method 中设置
         self.input_dtype = None
         self.quant_type = self.quant_config.quant_type
 
@@ -367,16 +377,21 @@ class GPTQMarlinLinearMethod(LinearMethodBase):
             weight_type=self.quant_config.quant_type,
             act_type=params_dtype if input_dtype is None else input_dtype,
             group_size=self.quant_config.group_size,
+            # 说明：GPTQMarlin 的量化是对称的，不包含 zero points
             zero_points=False,
             has_g_idx=self.quant_config.desc_act,
         )
 
+        # 说明：理论上，GPTQMarlinLinearMethod 有可能选择出非 MarlinLinearKernel，
+        # 只要 kernel 在当前配置上 can_implement 即可
         kernel_type = choose_mp_linear_kernel(mp_linear_kernel_config)
 
         if kernel_type.__name__ not in self._kernel_backends_being_used:
             logger.info("Using %s for GPTQMarlinLinearMethod", kernel_type.__name__)
             self._kernel_backends_being_used.add(kernel_type.__name__)
 
+        # 说明：输入维度的连续 group_size 个元素量化为一组
+        # group_size == -1 表示 channel-wise quantization，每列有 input_size 个元素
         # Normalize group_size
         if self.quant_config.group_size != -1:
             group_size = self.quant_config.group_size
@@ -397,9 +412,11 @@ class GPTQMarlinLinearMethod(LinearMethodBase):
             scales_and_zp_input_dim = 0
             scales_and_zp_size = input_size_per_partition // group_size
 
+        # 说明：支持 row and column parallel
         # Quantized weights
         qweight = PackedvLLMParameter(
             data=torch.empty(
+                # 说明：对同一列中的连续行做 pack，同时也是输入维度
                 input_size_per_partition // self.quant_config.pack_factor,
                 output_size_per_partition,
                 dtype=torch.int32,
@@ -411,6 +428,7 @@ class GPTQMarlinLinearMethod(LinearMethodBase):
             weight_loader=weight_loader,
         )
 
+        # 说明：每个输入维度对应一个 g_idx；支持 row parallel
         # Activation order
         g_idx = RowvLLMParameter(
             data=torch.empty(
@@ -421,6 +439,8 @@ class GPTQMarlinLinearMethod(LinearMethodBase):
             weight_loader=weight_loader,
         )
 
+        # 说明：连续 group_size 个输入维度对应一个 scale 和 zero point，所以行数是 scales_and_zp_size；
+        # qzeros 跨列打包，一共 output_size_per_partition // self.quant_config.pack_factor 个列；
         qzeros_args = {
             "data": torch.empty(
                 scales_and_zp_size,
@@ -429,6 +449,7 @@ class GPTQMarlinLinearMethod(LinearMethodBase):
             ),
             "weight_loader": weight_loader,
         }
+        # 说明：weight_scale 跨列不打包，一共 output_size_per_partition 列；
         weight_scale_args = {
             "data": torch.empty(
                 scales_and_zp_size,
@@ -438,8 +459,11 @@ class GPTQMarlinLinearMethod(LinearMethodBase):
             "weight_loader": weight_loader,
         }
 
+        # 说明：scales_and_zp_input_dim 为 None 时在每个设备上产生完整 scales；为 0 时在每个设备上产生分片 scales
         if scales_and_zp_input_dim is None:
+            # 说明：支持 column parallel
             scales = ChannelQuantScaleParameter(output_dim=1, **weight_scale_args)
+            # 说明：支持 column parallel
             qzeros = PackedColumnParameter(
                 output_dim=1,
                 packed_dim=1,
@@ -448,9 +472,11 @@ class GPTQMarlinLinearMethod(LinearMethodBase):
             )
 
         else:
+            # 说明：支持 column and row parallel
             scales = GroupQuantScaleParameter(
                 output_dim=1, input_dim=0, **weight_scale_args
             )
+            # 说明：支持 column and row parallel
             qzeros = PackedvLLMParameter(
                 input_dim=0,
                 output_dim=1,
@@ -500,6 +526,7 @@ class GPTQMarlinMoEMethod(FusedMoEMethodBase):
             self.quant_type = scalar_types.uint8b128
         else:
             raise ValueError("GPTQMarlinMoEMethod only supports int4 and int8 now.")
+        # 说明：在 get_moe_quant_method 中设置
         self.input_dtype = None
         self.use_marlin = True
 

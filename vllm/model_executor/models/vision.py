@@ -250,6 +250,8 @@ def run_dp_sharded_vision_model(
     return vision_embeddings
 
 
+# 已阅
+# 说明：基于图像大小的负载均衡分配，并产生相关元数据
 def get_load_balance_assignment(
     sizes: list[int],
     num_gpus: int = 2,
@@ -319,6 +321,7 @@ def get_load_balance_assignment(
     return (shuffle_indices, gpu_sample_counts, gpu_loads)
 
 
+# 已阅
 def run_dp_sharded_mrope_vision_model(
     vision_model: torch.nn.Module,
     pixel_values: torch.Tensor,
@@ -360,7 +363,7 @@ def run_dp_sharded_mrope_vision_model(
 
     # patches_per_image = [1000, 100, 200, 50]
     patches_per_image = [math.prod(grid_thw) for grid_thw in grid_thw_list]
-    # patches_per_image = [0, 1000, 1100, 1300, 1350]
+    # cum_patches_per_image = [0, 1000, 1100, 1300, 1350]
     cum_patches_per_image = [0, *itertools.accumulate(patches_per_image)]
 
     # Get load balancing assignment with all metadata
@@ -384,6 +387,9 @@ def run_dp_sharded_mrope_vision_model(
     if len(image_idxs_local) > 0:
         pixel_values_local = torch.cat(
             [
+                # 说明：
+                # GPU_0 = [pixel_values[0:1000]]
+                # GPU_1 = [pixel_values[1000:1100], pixel_values[1100:1300], pixel_values[1300:1350]]
                 pixel_values[cum_patches_per_image[i] : cum_patches_per_image[i + 1]]
                 for i in image_idxs_local
             ]
@@ -396,6 +402,9 @@ def run_dp_sharded_mrope_vision_model(
             dtype=pixel_values.dtype,
         )
     # embed_dim_reduction_factor = 2 * 2
+    # 说明：注意这里的计算方式，rope_2d 时，embed_dim_reduction_factor
+    # 是通过 vision_model.merge_kernel_size 计算得到的；rope_3d 时，
+    # 则是通过 vision_model.spatial_merge_size 计算得到的。
     if rope_type == "rope_2d":
         embed_dim_reduction_factor = (
             vision_model.merge_kernel_size[0] * vision_model.merge_kernel_size[1]
@@ -409,19 +418,25 @@ def run_dp_sharded_mrope_vision_model(
     # The output embedding of every DP rank has to be
     # padded to this length for tensor_model_parallel_all_gather
     # to work
+    # 说明：embed_dim_reduction_factor 用于将 patch 数量转换为最终的 embedding 数量
+    # 是对应 vision_model 中的空间下采样操作
     max_len_per_rank = max(grouped_pixel_values_len) // embed_dim_reduction_factor
     local_grid_thw_list = [grid_thw_list[i] for i in image_idxs_local]
 
     # Run the vision model on the local pixel_values_local
     if rope_type == "rope_2d":
         if pixel_values_local.shape[0] > 0:
+            # 说明：可以参考 Qwen3_VisionTransformer 中 forward 的实现
             image_embeds_local = vision_model(
                 pixel_values_local, torch.tensor(local_grid_thw_list)
             )
+            # 说明：2d rope 可能会返回一个 list，需要拼接
+            # 问题：下面的 3d rope 是不会返回 list 还是返回 list 也不需要拼接？
             if isinstance(image_embeds_local, list):
                 image_embeds_local = torch.cat(image_embeds_local, dim=0)
         else:
             out_dim = getattr(vision_model.config, "hidden_size", None)
+            # 问题：为什么 2d 这里会产生 3 个维度的输出，而 3d 则是 2 个维度？
             image_embeds_local = torch.empty(
                 (0, embed_dim_reduction_factor, out_dim),
                 device=pixel_values.device,
@@ -464,6 +479,7 @@ def run_dp_sharded_mrope_vision_model(
         image_embeds_local_padded = image_embeds_local
 
     # Do all_gather to collect embeddings from all ranks
+    # 说明：按照 rank 顺序拼接所有 rank 的输出
     gathered_embeds = tensor_model_parallel_all_gather(image_embeds_local_padded, dim=0)
 
     # Remove padding and reconstruct per-rank embeddings

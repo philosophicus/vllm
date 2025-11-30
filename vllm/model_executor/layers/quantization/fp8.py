@@ -111,6 +111,7 @@ class Fp8Config(QuantizationConfig):
         is_checkpoint_fp8_serialized: bool = False,
         activation_scheme: str = "dynamic",
         ignored_layers: list[str] | None = None,
+        # 说明：(M_block, K_block)
         weight_block_size: list[int] | None = None,
     ) -> None:
         super().__init__()

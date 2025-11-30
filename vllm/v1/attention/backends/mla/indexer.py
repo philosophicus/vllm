@@ -59,11 +59,17 @@ class DeepseekV32IndexerBackend(AttentionBackend):
 
 @dataclass
 class DeepseekV32IndexerPrefillChunkMetadata:
+    # 说明：该 chunk 中所有请求对应的 block table
     block_table: torch.Tensor
+    # 说明：cu_seqlen_ks/ke 表示每个 token 的 KV span 在整体 KV cache 中的
+    # 起始（inclusive）和结束位置（exclusive）
     cu_seqlen_ks: torch.Tensor
     cu_seqlen_ke: torch.Tensor
+    # 说明：cu_seq_lens 表示该 chunk 中所有请求的累计长度，从 0 开始，长度为 num_reqs + 1
     cu_seq_lens: torch.Tensor
+    # 说明：total_seq_lens 表示该 chunk 中所有请求的总长度
     total_seq_lens: int
+    # 说明：token 在整体 query 中的起始（inclusive）和结束位置（exclusive）
     token_start: int
     token_end: int
     num_reqs: int
@@ -77,7 +83,9 @@ class DeepseekV32IndexerPrefillMetadata:
 @dataclass
 class DeepSeekV32IndexerDecodeMetadata:
     block_table: torch.Tensor
+    # 说明：每个序列的长度
     seq_lens: torch.Tensor
+    # 说明：每个 decode query 的长度
     decode_lens: torch.Tensor
     requires_padding: bool
     schedule_metadata: torch.Tensor
@@ -110,6 +118,11 @@ class DeepseekV32IndexerMetadata:
     prefill: DeepseekV32IndexerPrefillMetadata | None = None
 
 
+
+# 已阅
+# 说明：计算每个 token 的 KV span 在整体 KV cache 中的起始（inclusive）和结束位置（exclusive）
+# start_seq_loc 是每个 batch 的 selected tokens 的累计长度
+# seq_len_per_batch 是每个 batch 的完整序列长度，即 KV Cache 长度
 # TODO (zyongye) optimize this, this is now vibe coded
 def kv_spans_from_batches(
     start_seq_loc: torch.Tensor, seq_len_per_batch: torch.Tensor, device: torch.device
@@ -151,30 +164,49 @@ def kv_spans_from_batches(
             torch.empty(0, dtype=torch.long, device=device),
         )
 
+    # 说明：[5, 9, 4] -> [0, 5, 14]
     # KV start offsets per batch in the concatenated KV cache
     kv_starts_per_batch = torch.cumsum(L, dim=0) - L  # [B]
 
+    # 说明：每个 token 对应的 batch idx
     # For each selected token, which batch does it belong to?
     batch_id = torch.repeat_interleave(torch.arange(B), counts)  # [N]
 
+    # 说明：每个 token 对应的 batch 在 KV cache 中的起始位置
     # Map batch KV start to each token
     start_tensor = kv_starts_per_batch[batch_id]  # [N]
 
+    # 说明：[5, 9, 4] -> [5, 5, 9, 9, 9, 4, 4, 4]
     # End-align local positions inside each batch:
     # local_pos = L[b] - counts[b] + (1..counts[b])  for each batch b
     L_expand = torch.repeat_interleave(L, counts)  # [N]
+    # 说明：[2, 2, 3] -> [2, 2, 2, 2, 3, 3, 3]
     m_expand = torch.repeat_interleave(counts, counts)  # [N]
     # position within the selected block: 1..counts[b]
     pos_within = (
+        # 说明：[0, 1, 2, 3, 4, 5, 6] - [0, 0, 2, 2, 4, 4, 4] + 1 = [1, 2, 1, 2, 1, 2, 3]
         torch.arange(N, dtype=torch.long) - torch.repeat_interleave(q[:-1], counts) + 1
     )
 
+    # 说明：local_pos 表示每个 token 在对应 batch 中的本地位置，1-based
+    # local_pos = [3, 4, 8, 9, 2, 3, 4]，1-based 是因为区间索引的 end 是 exclusive 的
     local_pos = L_expand - m_expand + pos_within  # [N], 1-based
     end_location = start_tensor + local_pos  # exclusive end
 
     return start_tensor.int().to(device), end_location.int().to(device)
 
 
+# 已阅
+# 说明：获取 prefill buffer 的最大 token 数
+# 说明：一个 token (entry) 的 fp8 量化权重 128 字节（同时也是一个量化 group），
+# 一个 scale 大小为 4 字节，总大小为 132 字节；
+# 对应在 flashmla_sparse 中，一个 token 的总大小为 576 * 2 字节；
+# 又因为 flashmla_sparse 的 token 数 workspace_size = 5 * max_model_len，
+# 所以总大小为 576 * 2 * 5 * max_model_len；
+# 这里为了最大化 workspace_size，同时保证能够被 flashmla_sparse 的 workspace 装下，
+# 所以 workspace_size 取为 (576 * 2 // 132) * 5 = 40 倍的 max_model_len，
+# (576 * 2 // 132) 表示相同的空间能装下原来 8 倍的 token，所以总 token 数变为原来的 8 倍，
+# 即 40 * max_model_len
 def get_max_prefill_buffer_size(vllm_config: VllmConfig):
     max_model_len = vllm_config.model_config.max_model_len
     # NOTE(Chen): 40 is a magic number for controlling the prefill buffer size.
@@ -188,7 +220,10 @@ def get_max_prefill_buffer_size(vllm_config: VllmConfig):
     return max_model_len * 40
 
 
+# 已阅
+# 说明：分别构建 prefill 和 decode 的 attention metadata，最终构建 DeepseekV32IndexerMetadata
 class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
+    # 说明：cudagraph 只支持 query 长度等于 1 的 decode
     _cudagraph_support: ClassVar[AttentionCGSupport] = (
         AttentionCGSupport.UNIFORM_SINGLE_TOKEN_DECODE
     )
@@ -205,6 +240,8 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             if self.vllm_config.speculative_config
             else 0
         )
+        # 说明：根据 speculative decoding 的配置增加 reorder_batch_threshold，最大等于 2，
+        # 原因见下面英文注释
         # Now deepgemm fp8_paged_mqa_logits does not support next_n > 2
         self.reorder_batch_threshold += min(self.num_speculative_tokens, 1)
 
@@ -302,6 +339,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                 common_attn_metadata.query_start_loc[: num_decodes + 1],
                 out=self.decode_lens_buffer[:num_decodes],
             )
+            # 说明：每个 decode query 的长度
             decode_lens = self.decode_lens_buffer[:num_decodes]
             decode_lens_cpu = torch.diff(
                 common_attn_metadata.query_start_loc_cpu[: num_decodes + 1]
@@ -311,6 +349,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             requires_padding = (decode_lens_cpu.max() > decode_lens_cpu.min()).item()
 
             seq_lens = common_attn_metadata.seq_lens[:num_decodes]
+            # 说明：DeepGEMM 仅用于 decode
             if is_deep_gemm_supported():
                 self.scheduler_metadata_buffer[:] = get_paged_mqa_logits_metadata(
                     seq_lens, self.kv_cache_spec.block_size, self.num_sms
@@ -331,6 +370,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             num_actual_tokens=common_attn_metadata.num_actual_tokens,
             query_start_loc=common_attn_metadata.query_start_loc,
             slot_mapping=common_attn_metadata.slot_mapping,
+            # 说明：关注 head_dim = 128
             head_dim=128,
             num_decodes=num_decodes,
             num_decode_tokens=num_decode_tokens,

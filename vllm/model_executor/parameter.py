@@ -28,6 +28,7 @@ __all__ = [
 logger = init_logger(__name__)
 
 
+# 已阅
 class BasevLLMParameter(Parameter):
     """
     Base parameter for vLLM linear layers. Extends the torch.nn.parameter
@@ -48,6 +49,7 @@ class BasevLLMParameter(Parameter):
         :returns: a torch.nn.parameter
         """
 
+        # 说明：下文注释中的 sync the param tensor 对应 make_synced_weight_loader 中的 torch._sync(param)
         # During weight loading, we often do something like:
         # narrowed_tensor = param.data.narrow(0, offset, len)
         # narrowed_tensor.copy_(real_weight)
@@ -85,6 +87,7 @@ class BasevLLMParameter(Parameter):
     def weight_loader(self):
         self._weight_loader = None  # type: ignore[assignment]
 
+    # 说明：self.data 是 1d 张量且只有 1 个元素，loaded_weight 是标准 scalar 张量（0 维单元素）
     def _is_1d_and_scalar(self, loaded_weight: torch.Tensor):
         cond1 = self.data.ndim == 1 and self.data.numel() == 1
         cond2 = loaded_weight.ndim == 0 and loaded_weight.numel() == 1
@@ -126,6 +129,10 @@ class BasevLLMParameter(Parameter):
         return super().__torch_function__(func, types, args, kwargs)
 
 
+# 已阅
+# 说明：columne parallel linear 层的参数基类
+# （磁盘中存储的不是拼接后的参数）
+# 注意：output_dim 是参数的输出维度所在的位置，column parallel 是对输出维度进行分片
 class _ColumnvLLMParameter(BasevLLMParameter):
     """
     Private class defining weight loading functionality
@@ -145,6 +152,7 @@ class _ColumnvLLMParameter(BasevLLMParameter):
     def output_dim(self):
         return self._output_dim
 
+    # 说明：self.data 的 shape 就是分片后的 shape
     def load_column_parallel_weight(self, loaded_weight: torch.Tensor):
         shard_size = self.data.shape[self.output_dim]
         loaded_weight = loaded_weight.narrow(
@@ -153,6 +161,7 @@ class _ColumnvLLMParameter(BasevLLMParameter):
         assert self.data.shape == loaded_weight.shape
         self.data.copy_(loaded_weight)
 
+    # 理解：与 load_column_parallel_weight 的区别是 self.data 是多分片 merged 的，需要根据 shard_offset 和 shard_id 找到对应的分片
     def load_merged_column_weight(self, loaded_weight: torch.Tensor, **kwargs):
         shard_offset = kwargs.get("shard_offset")
         shard_size = kwargs.get("shard_size")
@@ -178,6 +187,7 @@ class _ColumnvLLMParameter(BasevLLMParameter):
     def load_qkv_weight(self, loaded_weight: torch.Tensor, **kwargs):
         shard_offset = kwargs.get("shard_offset")
         shard_size = kwargs.get("shard_size")
+        # 理解：shard_id 应该是 "q"、"k"、"v" 三选一
         shard_id = kwargs.get("shard_id")
         num_heads = kwargs.get("num_heads")
 
@@ -191,7 +201,11 @@ class _ColumnvLLMParameter(BasevLLMParameter):
             )
 
         param_data = self.data
+        # 理解："q" 的时候，shard_id 对应 tp_rank；"k" 或 "v" 的时候，shard_id 对应 tp_rank // num_heads
+        # （num_heads 个 rank 共享同一份权重，共形成 tp_rank // num_heads 个 shard）
+        # 理解：这里 Q 和 KV 的分片数量不一样，应该是为了支持 MQA/GQA 等注意力机制
         shard_id = self.tp_rank if shard_id == "q" else self.tp_rank // num_heads
+        # 理解：注释中提到 "QKV and MLP layers which are not already fused on disk"，说明这里的权重是未拼接到一起的
         param_data = param_data.narrow(self.output_dim, shard_offset, shard_size)
         loaded_weight = loaded_weight.narrow(
             self.output_dim, shard_id * shard_size, shard_size
@@ -201,6 +215,9 @@ class _ColumnvLLMParameter(BasevLLMParameter):
         param_data.copy_(loaded_weight)
 
 
+# 已阅
+# 说明：对应 row parallel linear 层的参数基类
+# 注意：input_dim 是参数的输入维度所在的位置，row parallel 是对输入维度进行分片
 class RowvLLMParameter(BasevLLMParameter):
     """
     Parameter class defining weight_loading functionality
@@ -248,6 +265,8 @@ class GroupQuantScaleParameter(_ColumnvLLMParameter, RowvLLMParameter):
     pass
 
 
+# 已阅
+# 说明：channel 对应输出维度
 class ChannelQuantScaleParameter(_ColumnvLLMParameter):
     """
     Parameter class for weight scales loaded for weights with
@@ -257,6 +276,8 @@ class ChannelQuantScaleParameter(_ColumnvLLMParameter):
     pass
 
 
+# 已阅
+# 说明：参考 MergedColumnParallelLinear，fused 指 "the weight matrix is concatenated along the output dimension"
 class PerTensorScaleParameter(BasevLLMParameter):
     """
     Parameter class for scales where the number of scales is
@@ -274,6 +295,7 @@ class PerTensorScaleParameter(BasevLLMParameter):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
+    # 说明：行并行不需要分片，直接加载权重到参数中
     # For row parallel layers, no sharding needed
     # load weight into parameter as is
     def load_row_parallel_weight(self, *args, **kwargs):
@@ -285,9 +307,11 @@ class PerTensorScaleParameter(BasevLLMParameter):
     def load_qkv_weight(self, *args, **kwargs):
         self._load_into_shard_id(*args, **kwargs)
 
+    # 问题：per-tensor scale 的列并行为什么调用父类行并行的加载方法？
     def load_column_parallel_weight(self, *args, **kwargs):
         super().load_row_parallel_weight(*args, **kwargs)
 
+    # 说明：加载 loaded_weight 到 self.data[shard_id] 分片中
     def _load_into_shard_id(
         self, loaded_weight: torch.Tensor, shard_id: str | int, **kwargs
     ):
@@ -310,6 +334,8 @@ class PerTensorScaleParameter(BasevLLMParameter):
         param_data.copy_(loaded_weight)
 
 
+# 已阅
+# 说明：只支持 column parallelism
 class PackedColumnParameter(_ColumnvLLMParameter):
     """
     Parameter for model parameters which are packed on disk
@@ -331,6 +357,7 @@ class PackedColumnParameter(_ColumnvLLMParameter):
         self._bitblas_tile_size = bitblas_tile_size
         super().__init__(**kwargs)
 
+    # 说明：与 self.output_dim 比较，一致时才会调整分片索引
     @property
     def packed_dim(self):
         return self._packed_dim
@@ -357,6 +384,8 @@ class PackedColumnParameter(_ColumnvLLMParameter):
         )
 
 
+# 说明：磁盘上已 Packed 的模型参数；支持 column 和 row parallelism；
+# 问题：注释中又提到 fused，说明对于 packed 的参数，应该是已拼接的？
 class PackedvLLMParameter(ModelWeightParameter):
     """
     Parameter for model weights which are packed on disk.
@@ -417,6 +446,7 @@ class BlockQuantScaleParameter(_ColumnvLLMParameter, RowvLLMParameter):
     pass
 
 
+# 说明：跨层共享权重的参数类
 class SharedWeightParameter(BasevLLMParameter):
     """
     Parameter for weights with many shared tensors across a model
@@ -441,6 +471,7 @@ class SharedWeightParameter(BasevLLMParameter):
     def __new__(cls, **kwargs):
         return super().__new__(cls, data=None, **kwargs)
 
+    # 说明：默认 shape 为 [output_dim, input_dim]
     def __init__(self, input_dim: int = 1, output_dim: int = 0, **kwargs):
         weight_loader: Callable = kwargs.get("weight_loader")  # type: ignore[assignment]
         super().__init__(data=None, weight_loader=weight_loader)
@@ -483,12 +514,14 @@ class SharedWeightParameter(BasevLLMParameter):
         # see https://github.com/pytorch/pytorch/issues/75932
         self.local_tensors.add(data)
 
+    # 说明：只支持单 partition 且 index 为 0
     def load_column_parallel_weight(self, loaded_weight: torch.Tensor):
         assert len(self.partitions) == 1 and 0 in self.partitions
         partition = self.partitions[0]
 
         ModelWeightParameter.load_column_parallel_weight(partition, loaded_weight)
 
+    # 说明：只支持单 partition 且 index 为 0
     def load_row_parallel_weight(self, loaded_weight: torch.Tensor):
         assert len(self.partitions) == 1 and 0 in self.partitions
         partition = self.partitions[0]
@@ -501,9 +534,12 @@ class SharedWeightParameter(BasevLLMParameter):
         partition = self.partitions[partition_id]
 
         input_dim = self.kwargs.get("input_dim")
+        # 问题：为什么按照 input_dim 计算 shard_size 和 shard_offset ？
+        # 下面执行 ModelWeightParameter.load_merged_column_weight 时，是在 output_dim 上进行分片的
         shard_size = partition.data.size(input_dim) // self.tp_size
         shard_offset = self.tp_rank * shard_size
 
+        # 说明：调用 _ColumnvLLMParameter 的 load_merged_column_weight 方法
         ModelWeightParameter.load_merged_column_weight(
             partition, loaded_weight, shard_offset=shard_offset, shard_size=shard_size
         )
@@ -513,6 +549,8 @@ class SharedWeightParameter(BasevLLMParameter):
         partition = self.partitions[partition_id]
 
         input_dim = self.kwargs.get("input_dim")
+        # 问题（同上）：为什么按照 input_dim 计算 shard_size 和 shard_offset ？
+        # 下面执行 ModelWeightParameter.load_qkv_weight 时，是在 output_dim 上进行分片的
         shard_size = partition.data.size(input_dim) // self.tp_size
         shard_offset = self.tp_rank * shard_size
         shard_id = "q"  # fake first partition
@@ -555,6 +593,8 @@ class SharedWeightParameter(BasevLLMParameter):
         )
 
 
+# 已阅
+# 说明：按照给定的 input_dim 和 output_dim，对参数进行维度 permute
 def permute_param_layout_(
     param: BasevLLMParameter, input_dim: int, output_dim: int, **kwargs
 ) -> BasevLLMParameter:
@@ -587,18 +627,26 @@ def permute_param_layout_(
         assert curr_input_dim is not None, "either input or output dim must be set"
         curr_output_dim = (curr_input_dim + 1) % 2
 
+    # 说明：不需要 permute 的维度
     # create permutation from the current layout to the layout with
     # self.input_dim at input_dim and self.output_dim at output_dim preserving
     # other dimensions
     perm = [
         i for i in range(param.data.dim()) if i not in [curr_input_dim, curr_output_dim]
     ]
+    # 说明：方法实际调用时，都是 input_dim = 0，output_dim = 1，所以按照下面的顺序插入不会有问题
+    # 说明：潜在 bug，应该根据 input_dim 和 output_dim 的大小关系决定插入顺序，先插入较小的维度
     perm.insert(input_dim, curr_input_dim)
     perm.insert(output_dim, curr_output_dim)
 
     if "packed_dim" in kwargs:
         assert (
             hasattr(param, "packed_dim")
+            # 说明：param.packed_dim 是 permute 前的维度，如 [0, 1, 2] 中的 1 (input_dim = 1, output_dim = 0, packed_dim = 1)
+            # perm[kwargs["packed_dim"]] 是 permute 后的维度对应的 permute 前的维度，
+            # 如对于参数 {input_dim = 0, output_dim = 1, packed_dim = 0}，perm = [1, 0, 2]，packed_dim = 0 对应 perm[0] = 1；
+            # kwargs 中的 packed_dim 是 permute 后的维度，此时的 perm 是执行 permute 后的维度对应的 permute 前的维度，即
+            # 0->1，1->0，2->2
             and param.packed_dim == perm[kwargs["packed_dim"]]
         ), "permute_param_layout_ currently doesn't support repacking"
 
@@ -613,17 +661,24 @@ def permute_param_layout_(
     return param
 
 
+# 理解：根据 Claude 的说法，Marlin 格式的权重 shape 为 [K // tile_size, N * tile_size // pack_factor]，
+# 对应代码搜索 "size_k // marlin_tile_size, size_n * marlin_tile_size // pack_factor"
+# 该方法仅在列并行时使用，此时 shard_size 和 shard_offset 是针对输出维度 N 的，
+# 需要做 * tile_size // pack_factor 调整
 def _adjust_shard_indexes_for_marlin(shard_size, shard_offset, marlin_tile_size):
     return shard_size * marlin_tile_size, shard_offset * marlin_tile_size
 
 
+# 待理解，需要看 BitBLAS 的实现细节
 def _adjust_shard_indexes_for_bitblas(shard_size, shard_offset, bitblas_tile_size):
     return shard_size // bitblas_tile_size, shard_offset // bitblas_tile_size
 
 
+# 说明：packed_factor (pack_factor) 表示 32 bits 中包含多少个量化值
 def _adjust_shard_indexes_for_packing(
     shard_size, shard_offset, packed_factor, marlin_tile_size, bitblas_tile_size
 ):
+    # 说明：做 pack 之后的 shard_size 和 shard_offset
     shard_size = shard_size // packed_factor
     shard_offset = shard_offset // packed_factor
     if marlin_tile_size is not None:

@@ -24,6 +24,7 @@ from vllm.utils.import_utils import has_deep_gemm
 from vllm.utils.math_utils import cdiv
 
 
+# 已阅
 class DeepGemmQuantScaleFMT(Enum):
     # Float32 scales in Float32 tensor
     FLOAT32 = 0
@@ -35,6 +36,7 @@ class DeepGemmQuantScaleFMT(Enum):
     # element contains 4 scale values.
     UE8M0 = 2
 
+    # 说明：oracle 的含义未知；方法的作用是初始化量化 scale 的格式
     @classmethod
     def init_oracle_cache(cls) -> None:
         """Initialize the oracle decision and store it in the class cache"""
@@ -65,6 +67,7 @@ class DeepGemmQuantScaleFMT(Enum):
         return cached
 
 
+# 已阅
 @functools.cache
 def is_deep_gemm_supported() -> bool:
     """Return `True` if DeepGEMM is supported on the current platform.
@@ -102,6 +105,7 @@ def is_deep_gemm_e8m0_used() -> bool:
     return False
 
 
+# 已阅
 def _missing(*_: Any, **__: Any) -> NoReturn:
     """Placeholder for unavailable DeepGEMM backend."""
     raise RuntimeError(
@@ -174,6 +178,7 @@ def _lazy_init() -> None:
     DeepGemmQuantScaleFMT.init_oracle_cache()
 
 
+# 已阅
 def get_num_sms() -> int:
     _lazy_init()
     _dg = importlib.import_module("deep_gemm")
@@ -236,6 +241,7 @@ def transform_sf_into_required_layout(*args, **kwargs):
     )
 
 
+# 已阅
 def fp8_mqa_logits(
     q: torch.Tensor,
     kv: tuple[torch.Tensor, torch.Tensor],

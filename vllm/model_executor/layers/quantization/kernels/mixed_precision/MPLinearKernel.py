@@ -11,6 +11,7 @@ from vllm.model_executor.layers.quantization.utils import replace_parameter
 from vllm.scalar_type import ScalarType
 
 
+# 已阅
 @dataclass
 class MPLinearLayerConfig:
     full_weight_shape: tuple[int, int]  # [in, out]
@@ -18,11 +19,17 @@ class MPLinearLayerConfig:
     weight_type: ScalarType
     act_type: torch.dtype
     group_size: int
+    # 说明：true 表示包含 zero points，即使用非对称量化
     zero_points: bool
+    # 说明：true 表示包含 g_idx，用于激活重排序
     has_g_idx: bool
     out_type: torch.dtype | None = None
 
 
+# 已阅
+# 说明：混合精度（Mixed Precision）线性算子的抽象基类
+# 说明：各参数的具体 shape 可以在 LinearBaseMethod 的子类中查看，
+# LinearBaseMethod 各子类中会创建 MPLinearKernel 中子类实例
 class MPLinearKernel(ABC):
     @classmethod
     @abstractmethod
@@ -37,9 +44,13 @@ class MPLinearKernel(ABC):
     def __init__(
         self,
         c: MPLinearLayerConfig,
+        # 说明：量化权重对应的参数名称
         w_q_param_name: str,
+        # 说明：量化缩放因子对应的参数名称
         w_s_param_name: str,
+        # 说明：量化 zero points 对应的参数名称
         w_zp_param_name: str | None = None,
+        # 说明：权重 group_idx 对应的参数名称
         w_gidx_param_name: str | None = None,
     ) -> None:
         assert self.can_implement(c)
@@ -53,6 +64,7 @@ class MPLinearKernel(ABC):
         self.w_zp_name = w_zp_param_name
         self.w_gidx_name = w_gidx_param_name
 
+    # 说明：LinearBaseMethod 实例负责加载权重，MPLinearKernel 实例负责处理权重
     @abstractmethod
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         raise NotImplementedError

@@ -466,6 +466,7 @@ model_tag: str = "backbone"
 model_is_encoder: bool = False
 
 
+# 已阅
 @contextmanager
 def set_model_tag(tag: str, is_encoder: bool = False) -> Generator[None, None, None]:
     """Context manager to set the model tag."""

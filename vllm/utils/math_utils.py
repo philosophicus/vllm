@@ -3,6 +3,8 @@
 """Math utility functions for vLLM."""
 
 
+# 已阅
+# 说明：正数除以负数，向下取整，加负号得到向上取整的结果
 def cdiv(a: int, b: int) -> int:
     """Ceiling division."""
     return -(a // -b)

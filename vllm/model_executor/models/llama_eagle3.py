@@ -143,6 +143,10 @@ class LlamaModel(nn.Module):
         self.quant_config = get_draft_quant_config(vllm_config)
 
         eagle_config = getattr(self.config, "eagle_config", None)
+        # 说明：use_aux_hidden_state 控制是否使用辅助隐藏状态，
+        # 即 l(ow), m(iddle), h(igh) 三层 feature sequences（或者叫 hidden states）；
+        # 如果使用的话，将三个 hidden states 在模型 hidden_size 维度进行拼接（k -> 3k），
+        # 再经过一个线性层降至 k 维（即 combine_hidden_states 方法），得到 feature g
         if eagle_config is not None and "use_aux_hidden_state" in eagle_config:
             self.use_aux_hidden_state = eagle_config["use_aux_hidden_state"]
         else:

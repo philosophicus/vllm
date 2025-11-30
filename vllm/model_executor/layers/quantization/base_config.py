@@ -15,6 +15,12 @@ else:
     QuantizationMethods = str
 
 
+# 说明：负责为层 create weights，并对输入张量 apply weights 的抽象基类；
+# 理解：命名为 QuantizeMethodBase 应该是因为 weights 一般是需要量化的
+# 说明：子类包括 LinearMethodBase、FusedMoEMethodBase、BaseKVCacheMethod、UnquantizedEmbeddingMethod
+# - LinearMethodBase 负责执行 matmul(A, B) + C，子类有 UnquantizedLinearMethod，
+#   以及每种量化方法对应的 Method，如 GPTQLinearMethod, GPTQMarlinLinearMethod, AWQMarlinLinearMethod 等
+# - FusedMoEMethodBase 的说明见类定义处
 class QuantizeMethodBase(ABC):
     """Base class for different quantized methods."""
 
@@ -102,6 +108,8 @@ class QuantizationConfig(ABC):
         """Create a config class from the model's quantization config."""
         raise NotImplementedError
 
+    # 说明：量化方法对应的实现类根据 hf_quant_config 中的 checkpoint 格式信息和用户指定的量化方法，
+    # 来判断能否覆盖用户指定的量化方法
     @classmethod
     def override_quantization_method(
         cls, hf_quant_cfg, user_quant
@@ -150,6 +158,8 @@ class QuantizationConfig(ABC):
     def get_cache_scale(self, name: str) -> str | None:
         return None
 
+    # 说明：根据 WeightsMapper 中保存的 hf -> vllm 名称映射关系（子串、前缀、后缀），
+    # 更新量化配置中的模块名称
     def apply_vllm_mapper(  # noqa: B027
         self, hf_to_vllm_mapper: "WeightsMapper"
     ):
@@ -163,6 +173,7 @@ class QuantizationConfig(ABC):
         # TODO (@kylesayrs): add implementations for all subclasses
         pass
 
+    # 说明：配置初始化后调用
     def maybe_update_config(self, model_name: str):  # noqa: B027
         """
         Interface to update values after config initialization.

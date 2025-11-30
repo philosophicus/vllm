@@ -104,6 +104,7 @@ def init_none_hash(hash_fn: Callable[[Any], bytes]):
         NONE_HASH = BlockHash(hash_fn(hash_seed))
 
 
+# 只是 Metadata
 @dataclass
 class KVCacheBlock:
     """KV-cache block metadata."""
@@ -242,6 +243,7 @@ class FreeKVCacheBlockQueue:
         self.num_free_blocks -= 1
         return first_block
 
+    # 已阅
     def popleft_n(self, n: int) -> list[KVCacheBlock]:
         """Pop the first n free blocks and reduce num_free_blocks by n.
 
@@ -275,6 +277,7 @@ class FreeKVCacheBlockQueue:
             curr_block.prev_free_block = self.fake_free_list_head
         return ret
 
+    # 已阅
     def remove(self, block: KVCacheBlock) -> None:
         """Remove a block in the free list and reduce num_free_blocks by 1.
 
@@ -318,6 +321,7 @@ class FreeKVCacheBlockQueue:
 
         self.num_free_blocks += 1
 
+    # 已阅
     def append_n(self, blocks: list[KVCacheBlock]) -> None:
         """Put a list of blocks back into the free list
 
@@ -505,6 +509,7 @@ def generate_block_hash_extra_keys(
         request, start_token_idx, end_token_idx, start_mm_idx
     )
     lora_extra_keys: list[str] = _gen_lora_extra_hash_keys(request)
+    # 补充（引用）：value is injected into the hash of the first block
     cache_salt_keys: list[str] = (
         [request.cache_salt] if (start_token_idx == 0 and request.cache_salt) else []
     )
@@ -560,6 +565,7 @@ def get_request_block_hasher(
     Returns a function which computes the list of un-computed block hashes
     of a request."""
 
+    # 对请求中 block 进行哈希的函数
     def request_block_hasher(request: Request) -> list[BlockHash]:
         start_token_idx = len(request.block_hashes) * block_size
         num_tokens = request.num_tokens
@@ -652,6 +658,8 @@ def max_memory_usage_bytes(
     return sum(spec.max_memory_usage_bytes(vllm_config) for spec in kv_cache_specs)
 
 
+# 已阅
+# 功能：估计在给定可用内存下，模型的最大长度（使用二分查找）
 def estimate_max_model_len(
     vllm_config: VllmConfig,
     kv_cache_spec: dict[str, KVCacheSpec],
@@ -706,6 +714,8 @@ def estimate_max_model_len(
         vllm_config.model_config.max_model_len = original_max_model_len
 
 
+# 已阅，待看
+# 功能：检查可用内存是否足够存放模型至少一个最大长度的 KV cache
 def check_enough_kv_cache_memory(
     vllm_config: VllmConfig,
     kv_cache_spec: dict[str, KVCacheSpec],
@@ -734,6 +744,7 @@ def check_enough_kv_cache_memory(
         )
 
 
+# 已阅
 def create_kv_cache_group_specs(
     kv_cache_spec: dict[str, KVCacheSpec], grouped_layer_names: list[list[str]]
 ) -> list[KVCacheGroupSpec]:
@@ -764,6 +775,11 @@ def create_kv_cache_group_specs(
     return kv_cache_groups
 
 
+# 已阅
+# 功能：判断 kv_cache_spec 中所有层的 KV cache 规格是否一致
+# 注意：我们将带有和不带滑动窗口的 FullAttentionSpec 视为同一类型。
+# FullAttentionSpec 带 sliding_window 属性的目的是在 hybrid allocator 被禁用时，
+# 仍可以实现混合注意力机制模型的 KV cache 管理
 def is_kv_cache_spec_uniform(kv_cache_spec: dict[str, KVCacheSpec]) -> bool:
     """
     Whether all layers in the given KVCacheSpec have the same KV cache spec.
@@ -810,6 +826,8 @@ def get_max_concurrency_for_kv_cache_config(
     return max_concurrency
 
 
+# 已阅
+# 功能：如果配置了 num_gpu_blocks_override，则用该值覆盖计算得到的 num_blocks
 def may_override_num_blocks(vllm_config: VllmConfig, num_blocks: int) -> int:
     """
     Override the number of kv cache blocks if `num_gpu_blocks_override` is set.
@@ -826,6 +844,9 @@ def may_override_num_blocks(vllm_config: VllmConfig, num_blocks: int) -> int:
     return num_blocks
 
 
+# 已阅
+# 说明：一个逻辑 block 的物理内存大小为 num_layers * page_size，page_size 对应的 block_size 和 kv_hidden_size 完全一致
+# 该方法用于获得逻辑 block 的个数
 def get_num_blocks(
     vllm_config: VllmConfig, num_layers: int, available_memory: int, page_size: int
 ) -> int:
@@ -838,12 +859,14 @@ def get_num_blocks(
         available_memory: Memory available for KV cache in bytes.
         page_size: The page size of the KV cache.
     """
+    # 相当于 page_size 变成了 num_layers * page_size，即一个 KVCacheGroupSpec 的大小
     num_blocks = int(available_memory // page_size // num_layers)
     num_blocks = max(num_blocks, 0)
     num_blocks = may_override_num_blocks(vllm_config, num_blocks)
     return num_blocks
 
 
+# 已阅
 def get_uniform_page_size(kv_cache_specs: Iterable[KVCacheSpec]) -> int:
     """
     Get the page size of the KV cache.
@@ -853,6 +876,7 @@ def get_uniform_page_size(kv_cache_specs: Iterable[KVCacheSpec]) -> int:
     return page_sizes.pop()
 
 
+# 已阅
 def _get_kv_cache_groups_uniform_spec(
     kv_cache_specs: dict[str, KVCacheSpec],
 ) -> list[KVCacheGroupSpec]:
@@ -870,6 +894,8 @@ def _get_kv_cache_groups_uniform_spec(
     return create_kv_cache_group_specs(kv_cache_specs, [list(kv_cache_specs.keys())])
 
 
+# 已阅
+# 说明：相同的 block_size 和 KVCacheSpec 类型但不同的 hidden sizes
 def _get_kv_cache_groups_uniform_type(
     spec: UniformTypeKVCacheSpecs,
 ) -> list[KVCacheGroupSpec]:
@@ -887,6 +913,7 @@ def _get_kv_cache_groups_uniform_type(
     return [KVCacheGroupSpec(list(spec.kv_cache_specs.keys()), spec)]
 
 
+# 已阅
 def is_kv_cache_page_size_uniform(kv_cache_spec: dict[str, KVCacheSpec]) -> bool:
     """
     Whether all layers in the given KVCacheSpec have the same page size.
@@ -901,6 +928,8 @@ def is_kv_cache_page_size_uniform(kv_cache_spec: dict[str, KVCacheSpec]) -> bool
     return len(page_sizes) == 1
 
 
+# 已阅
+# 说明：要求是最大的 page_size 能被小 page_size 整除，否则认为无法统一
 def unify_kv_cache_spec_page_size(
     kv_cache_spec: dict[str, KVCacheSpec],
 ) -> dict[str, KVCacheSpec]:
@@ -934,6 +963,7 @@ def unify_kv_cache_spec_page_size(
                     "maximum page size. Cannot unify by adjusting block_size."
                 )
             ratio = max_page_size // layer_page_size
+            # 补充：通过扩大 block_size 的方法对齐 page_size
             new_block_size = layer_spec.block_size * ratio
             new_spec = replace(layer_spec, block_size=new_block_size)
             assert new_spec.page_size_bytes == max_page_size
@@ -941,11 +971,22 @@ def unify_kv_cache_spec_page_size(
     return new_kv_cache_spec
 
 
+# 已阅
 def is_kv_cache_type_attention_free(kv_cache_spec: dict[str, KVCacheSpec]) -> bool:
     # kv_cache_spec is an empty dict for attention free models
     return not kv_cache_spec
 
 
+# 已阅
+# 补充：
+# 基于以下假设（代码中并没有校验逻辑）：
+# 1. block 的 page_size 相同（外部已经通过调用 unify_kv_cache_spec_page_size 方法保证了）
+# 2. block_size 相同（这个不一定）
+# 3. physical memory per token per layer 相同
+# 4. 每个 group 的 layer 数量相同
+# 5. group 内的 attention type 相同（禁用 hybrid allocator 时，full attention group 可能包含其他类型的 attention 层，见 unify_hybrid_kv_cache_specs）
+# 6. 支持多种 attention type，但 find_longest_cache_hit 仅支持一种 attention type 或两种（full attention 加一种其他类型）
+# 1 等于 2,3,4 的乘积，所以 2,3,4 相等，1 一定相等
 def _get_kv_cache_groups_uniform_page_size(
     kv_cache_spec: dict[str, KVCacheSpec],
 ) -> list[KVCacheGroupSpec]:
@@ -970,7 +1011,7 @@ def _get_kv_cache_groups_uniform_page_size(
     1. A model only uses full attention. The pattern is
     (num_hidden_layers * full), so there is only one group and the block table
     is shared by all layers. It is already handled by
-    `_get_kv_cache_config_uniform_type`.
+    `_get_kv_cache_groups_uniform_type`.
     2. A model with 10 full attention layers and 20 sliding window
     attention layers. There are 3 layers in the pattern (1 * full, 2 * sw), so
     there are 3 kv_cache_groups, each of which represents 10 layers.
@@ -1061,11 +1102,13 @@ def _get_kv_cache_groups_uniform_page_size(
         # the same and will cause memory waste.
         # To avoid this, we assign layers[i::num_groups] to the i-th group
         # instead of layers[i * group_size: (i + 1) * group_size]
+        # 补充：将相邻的层打散到不同的组中
         for i in range(num_groups):
             grouped_layers.append(layers[i::num_groups])
     return create_kv_cache_group_specs(kv_cache_spec, grouped_layers)
 
 
+# 已阅
 def get_kv_cache_config_from_groups(
     vllm_config: VllmConfig,
     kv_cache_groups: list[KVCacheGroupSpec],
@@ -1098,12 +1141,17 @@ def get_kv_cache_config_from_groups(
         # Special case: all layers have the same type of KV cache but with
         # different hidden size. Allocate different amount of memory for each
         # layer based on its hidden size.
+        # 说明：UniformTypeKVCacheSpecs 的 page_size_bytes 是所有层的和，
+        # 所以 num_blocks 是基于总的 page_size_bytes 计算的，每个层都有相同的 num_blocks，
+        # 最终每层的 Tensor 大小不同
         num_blocks = (
             available_memory // kv_cache_groups[0].kv_cache_spec.page_size_bytes
         )
         num_blocks = may_override_num_blocks(vllm_config, num_blocks)
         per_layer_specs = kv_cache_groups[0].kv_cache_spec.kv_cache_specs
         kv_cache_tensors = [
+            # 每层单独分配 Tensor，因为大小不一致所以不能共享
+            # 每层都有 num_blocks 个逻辑 block
             KVCacheTensor(
                 size=per_layer_specs[layer_name].page_size_bytes * num_blocks,
                 shared_by=[layer_name],
@@ -1119,25 +1167,37 @@ def get_kv_cache_config_from_groups(
         # (sw.1, padding) will be: (group_size = 2)
         # full.0, sw.0, sw.1: share a Tensor with size=available_memory//2
         # full.1, sw.2: share another Tensor with size=available_memory//2
+        # 说明：group_size 即每个组内的层数，由每个组选出一层共享同一个 Tensor
+        # 问题：how do they use different parts of the shared Tensor ?
+        # 说明：从逻辑上看，可能存在某些组的 layer_names 为空的情况，但这不影响 KVCacheTensor 的创建
         group_size = max(len(group.layer_names) for group in kv_cache_groups)
 
+        # 要求所有 group 的 spec 的 page 大小一致，即只能按照一个页大小分配 block
         page_size = get_uniform_page_size(
             [group.kv_cache_spec for group in kv_cache_groups]
         )
         assert group_size > 0, "group_size must be greater than 0"
+        # 根据 KVCacheGroupSpec 的 page_size 和组内层数，计算出每一层有多少逻辑 Block
         num_blocks = get_num_blocks(
             vllm_config, group_size, available_memory, page_size
         )
         kv_cache_tensors = []
+        # 将层分配到 Tensor 中
         for i in range(group_size):
             shared_by = []
             for j in range(len(kv_cache_groups)):
                 if i < len(kv_cache_groups[j].layer_names):
+                    # 将不同组 j 的同一位置 i 的层放在同一个 Tensor 中
                     shared_by.append(kv_cache_groups[j].layer_names[i])
             kv_cache_tensors.append(
+                # 说明：page_size * num_blocks = available_memory // group_size
+                # 理解：每个 block 的大小 * 逻辑 block 数
+                # 问题：是所有层共享 num_blocks 个逻辑 block ？
+                # size 为总大小
                 KVCacheTensor(size=page_size * num_blocks, shared_by=shared_by)
             )
 
+    # 说明：最终返回的 num_blocks 是 block pool 中的逻辑 block 数
     return KVCacheConfig(
         num_blocks=num_blocks,
         kv_cache_tensors=kv_cache_tensors,
@@ -1145,6 +1205,10 @@ def get_kv_cache_config_from_groups(
     )
 
 
+# 已阅
+# 功能：将混合 KV cache 规格转换为同一类型
+# 目前看只要类型相同即可，并不强制要求属性值都一致（除了 block_size 外，
+# 其他部分属性如 num_kv_heads，head_size 等没有强制要求一致）
 def unify_hybrid_kv_cache_specs(kv_cache_spec: dict[str, KVCacheSpec]):
     """
     This function tries to convert the KV cache specs to one type if the model
@@ -1155,6 +1219,8 @@ def unify_hybrid_kv_cache_specs(kv_cache_spec: dict[str, KVCacheSpec]):
         kv_cache_spec: The kv cache spec of each attention layer in the model
     """
 
+    # is_kv_cache_spec_uniform 主要用于检查 KVCacheSpec 基类中各属性值的一致性（若干类有 Override）
+    # UniformTypeKVCacheSpecs.is_uniform_type 主要用于检查实际类型及各子类独特属性的一致性
     if is_kv_cache_spec_uniform(
         kv_cache_spec
     ) or UniformTypeKVCacheSpecs.is_uniform_type(kv_cache_spec):
@@ -1176,6 +1242,8 @@ def unify_hybrid_kv_cache_specs(kv_cache_spec: dict[str, KVCacheSpec]):
     has_chunked_local_attention = any(
         isinstance(spec, ChunkedLocalAttentionSpec) for spec in kv_cache_spec.values()
     )
+    # FullAttentionSpec 中包含 SlidingWindowSpec 和 ChunkedLocalAttentionSpec 的特征属性，
+    # 所以支持转换
     if has_full_attention and (has_sliding_window or has_chunked_local_attention):
         for layer_name, spec in kv_cache_spec.items():
             if isinstance(spec, SlidingWindowSpec):
@@ -1207,6 +1275,9 @@ def unify_hybrid_kv_cache_specs(kv_cache_spec: dict[str, KVCacheSpec]):
         )
 
 
+# 已阅
+# 功能：将模型的层划分为具有相同 KV cache 规格的组
+# 重点：目前所有组的 page_size 都是相同的（所以 block_size 可能会不同）
 def get_kv_cache_groups(
     vllm_config: VllmConfig, kv_cache_spec: dict[str, KVCacheSpec]
 ) -> list[KVCacheGroupSpec]:
@@ -1221,8 +1292,15 @@ def get_kv_cache_groups(
         The generated KVCacheGroups
     """
     if vllm_config.scheduler_config.disable_hybrid_kv_cache_manager:
+        # 补充：只保证 spec 类型一致
+        # 除了 block_size 外，其他部分属性如 num_kv_heads，head_size 等没有强制要求一致
         unify_hybrid_kv_cache_specs(kv_cache_spec)
 
+    # 顺序依次为：
+    # 1. 不需要 KV cache
+    # 2. 所有层的 KV cache 规格完全一致
+    # 3. 所有层的 KV cache block_size 和类型一致（但规格可能不完全相同）
+    # 4. 所有层的 KV cache page 物理内存大小一致（但 block_size, 类型和规格可能不同）
     if is_kv_cache_type_attention_free(kv_cache_spec):
         # This returns an empty list to allow for the KVCacheManager to handle
         # attention free models.
@@ -1232,6 +1310,7 @@ def get_kv_cache_groups(
         # KV cache of all layers are the same, which is true for
         # most models. Allocate the same amount of memory for
         # each layer.
+        # 补充：spec 完全一致（特殊情况是 FullAttentionSpec）
         return _get_kv_cache_groups_uniform_spec(kv_cache_spec)
     elif uniform_spec := UniformTypeKVCacheSpecs.from_specs(kv_cache_spec):
         # All layers need the same number of token slots (e.g., all layers are
@@ -1242,6 +1321,8 @@ def get_kv_cache_groups(
     # As KVCacheManager can only allocate memory of one size, we need to unify
     # the page size of the layers. For cases cannot be unified, this function
     # will raise an error.
+    # 问题：为什么说 KVCacheManager 只能分配一种大小的内存呢？
+    # KVCacheManager 管理的应该是逻辑 block ？
     kv_cache_spec = unify_kv_cache_spec_page_size(kv_cache_spec)
     # Model contains multiple attention types, but KV cache of all layers
     # have the same physical memory per block per layer. Split the layers
@@ -1250,6 +1331,7 @@ def get_kv_cache_groups(
     return _get_kv_cache_groups_uniform_page_size(kv_cache_spec)
 
 
+# 已阅
 def generate_scheduler_kv_cache_config(
     kv_cache_configs: list[KVCacheConfig],
 ) -> KVCacheConfig:
@@ -1261,11 +1343,20 @@ def generate_scheduler_kv_cache_config(
     )
     # All workers have the same kv_cache_config except layer names, so use
     # an arbitrary one to initialize the scheduler.
+    # 说明：kv_cache_config 包含 num_blocks, kv_cache_tensors, kv_cache_groups
+    # 1. num_blocks 在所有 worker 中相同；
+    # 2. kv_cache_tensor 的 size 都是相同的（除了 UniformTypeKVCacheSpecs 这种情况），因为
+    #    page_size 相同且 num_blocks 相同；kv_cache_tensor 的个数可能不相同，因为每个 worker 的
+    #    kv_cache_groups 的层数可能不相同
+    # 3. kv_cache_groups 的个数相同，group 的 kv_cache_spec 是相同的，但每个 group 中的 
+    #    layer_names 层数和内容都可能不同
     cfg = copy.deepcopy(kv_cache_configs[0])
     for group in cfg.kv_cache_groups:
         if isinstance(group.kv_cache_spec, UniformTypeKVCacheSpecs):
             # All layers in the UniformTypeKVCacheSpecs have the same type,
             # so use an arbitrary one to initialize the scheduler.
+            # 补充：用内层 kv_cache_specs 中的第一个 spec 替换
+            # 类型为 UniformTypeKVCacheSpecs 的外层 kv_cache_spec
             group.kv_cache_spec = next(
                 iter(group.kv_cache_spec.kv_cache_specs.values())
             )
@@ -1451,6 +1542,146 @@ def _auto_fit_max_model_len(
         )
 
 
+def _max_memory_usage_bytes_from_groups(
+    vllm_config: VllmConfig,
+    kv_cache_groups: list[KVCacheGroupSpec],
+) -> int:
+    """
+    Calculate maximum memory usage in bytes from KV cache groups.
+
+    This correctly accounts for padding in hybrid models. For example, if a
+    model has 8 full attention layers and 9 sliding window layers, they will
+    be padded to 9 full + 9 sliding window for uniform group sizes.
+    """
+    if not kv_cache_groups:
+        return 0
+
+    # UniformTypeKVCacheSpecs special case (single group, per-layer specs)
+    if len(kv_cache_groups) == 1 and isinstance(
+        kv_cache_groups[0].kv_cache_spec, UniformTypeKVCacheSpecs
+    ):
+        per_layer_specs = kv_cache_groups[0].kv_cache_spec.kv_cache_specs
+        return sum(
+            spec.max_memory_usage_bytes(vllm_config)
+            for spec in per_layer_specs.values()
+        )
+
+    # General case: group_size pools, each shared by one layer per group
+    # Memory = group_size * page_size * blocks_for_max_len
+    group_size = max(len(group.layer_names) for group in kv_cache_groups)
+    page_size = get_uniform_page_size(
+        [group.kv_cache_spec for group in kv_cache_groups]
+    )
+    any_spec = kv_cache_groups[0].kv_cache_spec
+    blocks_needed = cdiv(any_spec.max_memory_usage_bytes(vllm_config), page_size)
+
+    return group_size * page_size * blocks_needed
+
+
+def _estimate_max_model_len_from_groups(
+    vllm_config: VllmConfig,
+    kv_cache_groups: list[KVCacheGroupSpec],
+    available_memory: int,
+) -> int:
+    """
+    Binary search for the maximum model length that fits in available memory.
+    Returns 0 if even 1 token doesn't fit.
+    """
+    original_max = vllm_config.model_config.max_model_len
+
+    def fits(model_len: int) -> bool:
+        vllm_config.model_config.max_model_len = model_len
+        return (
+            _max_memory_usage_bytes_from_groups(vllm_config, kv_cache_groups)
+            <= available_memory
+        )
+
+    try:
+        left, right = 1, original_max
+        if not fits(left):
+            return 0
+        result = 1
+        while left <= right:
+            mid = (left + right) // 2
+            if fits(mid):
+                result = mid
+                left = mid + 1
+            else:
+                right = mid - 1
+        return result
+    finally:
+        vllm_config.model_config.max_model_len = original_max
+
+
+def _auto_fit_max_model_len(
+    vllm_config: VllmConfig,
+    kv_cache_groups: list[KVCacheGroupSpec],
+    available_memory: list[int],
+) -> None:
+    """
+    When max_model_len is set to -1, this function estimates the largest
+    context length that can be supported with the available GPU memory.
+    It uses binary search to find the maximum length that fits across all
+    workers.
+
+    Args:
+        vllm_config: The global VllmConfig (will be modified in-place)
+        kv_cache_groups: The global KV cache groups (from get_kv_cache_groups).
+            This correctly accounts for padding in hybrid models.
+        available_memory: Memory available for KV cache in bytes for each
+            worker.
+    """
+    original_max = vllm_config.model_config.max_model_len
+
+    if not kv_cache_groups:
+        # All workers have empty specs (attention-free model)
+        logger.info_once(
+            "Auto-fit max_model_len: attention-free model, "
+            "using derived max_model_len=%d",
+            original_max,
+            scope="local",
+        )
+        return
+
+    # Use minimum available memory across all workers
+    min_available_memory = min(available_memory)
+    auto_fit_max = _estimate_max_model_len_from_groups(
+        vllm_config, kv_cache_groups, min_available_memory
+    )
+
+    if auto_fit_max <= 0:
+        raise ValueError(
+            "Cannot auto-fit max_model_len: not enough GPU memory available "
+            "to serve even a single token. Try increasing `gpu_memory_utilization`."
+        )
+
+    if auto_fit_max >= original_max:
+        # The model's full context length fits in memory
+        logger.info_once(
+            "Auto-fit max_model_len: full model context length %d fits in "
+            "available GPU memory",
+            original_max,
+            scope="local",
+        )
+    else:
+        # Need to reduce max_model_len to fit in memory
+        vllm_config.model_config.max_model_len = auto_fit_max
+        logger.info_once(
+            "Auto-fit max_model_len: reduced from %d to %d to fit in "
+            "available GPU memory (%.2f GiB available for KV cache)",
+            original_max,
+            auto_fit_max,
+            min_available_memory / GiB_bytes,
+            scope="local",
+        )
+
+
+# 已阅
+# 功能：根据每个 worker 的可用 memory，分别为每个 worker 生成 kv_cache_config，
+# 最后再根据所有配置中最小的 num_blocks 来调整所有 kv_cache_config 的 num_blocks
+# 和 kv cache tensor 的 size，让所有 worker 的 num_blocks 一致
+# 说明：kv cache tensor 的 size 成比例的进行缩小，page_size 没有变化
+# 理解：先各自占满内存尽力分配，再调整 num_blocks 保证一致，避免内存浪费
 def get_kv_cache_configs(
     vllm_config: VllmConfig,
     kv_cache_specs: list[dict[str, KVCacheSpec]],
@@ -1525,23 +1756,29 @@ def get_kv_cache_configs(
         )
 
     kv_cache_configs: list[KVCacheConfig] = []
+    # 为每个 worker 生成 kv_cache_config
     for kv_cache_spec_one_worker, available_memory_one_worker in zip(
         kv_cache_specs, available_memory
     ):
         kv_cache_groups_one_worker: list[KVCacheGroupSpec] = []
+        # 每个 worker 只保留属于自己的层
         for group in global_kv_cache_groups:
             group_layer_names_one_worker = [
                 layer_name
                 for layer_name in group.layer_names
                 if layer_name in kv_cache_spec_one_worker
             ]
+            # 问题：某些组可能不包含该 worker 的层？
             kv_cache_groups_one_worker.append(
                 KVCacheGroupSpec(group_layer_names_one_worker, group.kv_cache_spec)
             )
+        # 校验所有层都被分配到了组中
         assert sum(
             len(group.layer_names) for group in kv_cache_groups_one_worker
         ) == len(kv_cache_spec_one_worker), "Some layers are not assigned to any group."
         kv_cache_configs.append(
+            # 说明：每个 worker 的 kv_cache_groups 组个数是相同的，但组内层数可能是不同的
+            # 从逻辑看，可能存在某些组的 layer_names 为空的情况
             get_kv_cache_config_from_groups(
                 vllm_config, kv_cache_groups_one_worker, available_memory_one_worker
             )
@@ -1550,6 +1787,8 @@ def get_kv_cache_configs(
     # Change the num_blocks of each rank to the smallest among all ranks.
     # We also need to shrink the tensor size proportionally to avoid
     # allocating unused memory.
+    # 问题：每个 page 包含的 block_size 可能不同，这里为什么能直接用 num_blocks 来统一呢？
+    # 会导致总长度不同吗？
     min_num_blocks = min(
         kv_cache_config.num_blocks for kv_cache_config in kv_cache_configs
     )
@@ -1559,6 +1798,7 @@ def get_kv_cache_configs(
 
         # Shrink tensor size proportionally
         for tensor in kv_cache_config.kv_cache_tensors:
+            # 说明：size = page_size * num_blocks_old，保持 page_size 不变
             assert tensor.size % num_blocks_old == 0
             tensor.size = tensor.size // num_blocks_old * min_num_blocks
 
@@ -1568,6 +1808,7 @@ def get_kv_cache_configs(
     return kv_cache_configs
 
 
+# 已阅
 class BlockHashListWithBlockSize:
     """
     Convert block-hash granularity from `hash_block_size` to `target_block_size`.

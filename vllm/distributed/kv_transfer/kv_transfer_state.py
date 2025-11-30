@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 _KV_CONNECTOR_AGENT: KVConnectorBaseType | None = None
 
 
+# 已阅
 def get_kv_transfer_group() -> KVConnectorBaseType:
     assert _KV_CONNECTOR_AGENT is not None, (
         "disaggregated KV cache transfer parallel group is not initialized"
@@ -48,6 +49,7 @@ def is_v1_kv_transfer_group(connector: KVConnectorBaseType | None = None) -> boo
     return isinstance(connector, KVConnectorBase_V1)
 
 
+# 已阅
 def ensure_kv_transfer_initialized(
     vllm_config: "VllmConfig", kv_cache_config: Optional["KVCacheConfig"] = None
 ) -> None:
@@ -64,6 +66,8 @@ def ensure_kv_transfer_initialized(
         vllm_config.kv_transfer_config.is_kv_transfer_instance
         and _KV_CONNECTOR_AGENT is None
     ):
+        # 说明：任一 KV 角色都要创建 KV connector, connector 的角色是 WORKER
+        # connector 角色为 SCHEDULER 的只在调度器端创建，此时还没有执行到创建逻辑
         _KV_CONNECTOR_AGENT = KVConnectorFactory.create_connector(
             config=vllm_config,
             role=KVConnectorRole.WORKER,

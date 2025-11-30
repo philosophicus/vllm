@@ -17,7 +17,9 @@ from vllm.v1.worker.ubatching import dbo_current_ubatch_id
 logger = init_logger(__name__)
 
 
+# 已阅
 def _compute_bytes(shape: tuple[int, ...], dtype: torch.dtype) -> int:
+    # 说明：dtype.itemsize 返回单个元素的字节数
     return prod(shape) * dtype.itemsize
 
 
@@ -29,6 +31,8 @@ _GiB = 1024**3
 _manager: Optional["WorkspaceManager"] = None
 
 
+# 已阅
+# 说明：workspace buffers (tensors) 用于 Dual Batch Overlap
 class WorkspaceManager:
     """Manager for workspace allocation.
 
@@ -57,6 +61,7 @@ class WorkspaceManager:
         an assertion error. This ensures workspace size is fixed during execution.
         """
         self._locked = True
+        # 说明：控制是否输出调试信息
         if envs.VLLM_DEBUG_WORKSPACE:
             logger.info(
                 "[WORKSPACE DEBUG] Workspace locked. Current sizes: %s",
@@ -71,6 +76,7 @@ class WorkspaceManager:
         """Check if workspace is locked."""
         return self._locked
 
+    # 说明：从当前 workspace 中同时获取多个 tensor，最多只需要分配一次内存
     def get_simultaneous(
         self, *shapes_and_dtypes: tuple[tuple[int, ...], torch.dtype]
     ) -> list[torch.Tensor]:
@@ -143,6 +149,7 @@ class WorkspaceManager:
                     "Workspace growth is not allowed after locking."
                 )
 
+            # 说明：所有 workspace 的大小都保持一致
             for ubatch_id in range(self._num_ubatches):
                 current_workspace = self._current_workspaces[ubatch_id]
                 if (
@@ -176,6 +183,7 @@ class WorkspaceManager:
         return current_workspace
 
 
+# 已阅
 def is_workspace_manager_initialized() -> bool:
     """Check if workspace manager has been initialized.
 
@@ -185,6 +193,7 @@ def is_workspace_manager_initialized() -> bool:
     return _manager is not None
 
 
+# 已阅
 def current_workspace_manager() -> "WorkspaceManager":
     """Get the current workspace manager instance.
 
@@ -198,6 +207,7 @@ def current_workspace_manager() -> "WorkspaceManager":
     return _manager
 
 
+# 已阅
 def init_workspace_manager(
     device: torch.device, num_ubatches: int | None = None
 ) -> None:
@@ -221,6 +231,8 @@ def init_workspace_manager(
     _manager = WorkspaceManager(device, num_ubatches)
 
 
+# 已阅
+# 说明：没有 unlock 方法，锁定后就不能再解锁了
 def lock_workspace() -> None:
     """Lock the workspace to prevent further growth.
 
@@ -243,6 +255,7 @@ def lock_workspace() -> None:
     current_workspace_manager().lock()
 
 
+# 已阅
 def reset_workspace_manager() -> None:
     """Reset the workspace manager to uninitialized state.
 

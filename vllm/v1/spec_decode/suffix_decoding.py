@@ -4,6 +4,9 @@ from vllm.config import VllmConfig
 from vllm.v1.worker.gpu_input_batch import InputBatch
 
 
+# 已阅
+# 博客：https://www.snowflake.com/en/engineering-blog/fast-speculative-decoding-vllm-arctic/
+# 说明：for repetitive (i.e., agentic) generation (from the blog)
 class SuffixDecodingProposer:
     """
     Speculative decoding proposer for Suffix Decoding (https://arxiv.org/pdf/2411.04975).
@@ -19,6 +22,8 @@ class SuffixDecodingProposer:
         self.min_token_prob = config.suffix_decoding_min_token_prob
         self.max_model_len = vllm_config.model_config.max_model_len
 
+        # 说明：代码 https://github.com/snowflakedb/ArcticInference/blob/main/arctic_inference/suffix_decoding/cache.py
+        # https://github.com/snowflakedb/ArcticInference/blob/main/csrc/suffix_decoding/suffix_tree.cc
         # Lazy import to avoid error when Suffix Decoding is not used.
         from arctic_inference.suffix_decoding import SuffixDecodingCache
 
@@ -47,6 +52,7 @@ class SuffixDecodingProposer:
                 continue
 
             req_id = input_batch.req_ids[i]
+            # 说明：总的输入输出 token 数量
             num_tokens = input_batch.num_tokens_no_spec[i]
             if num_tokens >= self.max_model_len:
                 # Skip requests that have already reached the max model length.

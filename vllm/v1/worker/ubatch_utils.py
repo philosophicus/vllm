@@ -29,12 +29,17 @@ class UBatchSlice:
 UBatchSlices: TypeAlias = list[UBatchSlice]
 
 
+# 已阅
 def is_last_ubatch_empty(
     orig_num_tokens: int, padded_num_tokens: int, num_ubatches: int
 ) -> bool:
+    # 说明：(padded_num_tokens // num_ubatches) 表示每个 ubatch 分配的 token 数量，
+    # 是使前 num_ubatches - 1 个 ubatch 总量最小的（均匀）分配方式
     return (padded_num_tokens // num_ubatches) * (num_ubatches - 1) >= orig_num_tokens
 
 
+# 说明：检查是否满足 ubatch 的阈值要求，满足则说明可以启用 ubatch
+# num_tokens 指目标 token 数量
 def check_ubatch_thresholds(
     config: ParallelConfig, num_tokens: int, uniform_decode: bool
 ) -> bool:

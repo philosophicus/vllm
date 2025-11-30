@@ -230,6 +230,11 @@ def validate_logits_processors_parameters(
         logits_procs.validate_params(sampling_params)
 
 
+# 已阅
+# 说明：While request-level logits processors are explicitly not supported 
+# in the vLLM engine, vLLM does provide a convenient process to wrap an 
+# existing Callable request-level logits processor and create a 
+# batch-level logits processor that is compatible with vLLM.
 class AdapterLogitsProcessor(LogitsProcessor):
     """Wrapper for per-request logits processors
 
@@ -307,6 +312,15 @@ class AdapterLogitsProcessor(LogitsProcessor):
           logits processor partial[Tensor] or None
 
         """
+        # 说明：The default implementation of AdapterLogitsProcessor.apply() 
+        # applies the request-level logits processor to each row of input 
+        # logits sequentially and assembles the output logits tensor. 
+        # If the performance of this AdapterLogitsProcessor default 
+        # implementation is insufficient, then avoid wrapping your 
+        # request-level logits processor and instead re-implement it 
+        # as a LogitsProcessor subclass with optimized apply() and 
+        # update_state() implementations that operate at batch granularity
+        # 来源：https://docs.vllm.ai/en/latest/features/custom_logitsprocs/#best-practices-for-writing-custom-logits-processors
         if req_lp := self.new_req_logits_processor(params):
             args = (
                 [prompt_ids, output_ids]

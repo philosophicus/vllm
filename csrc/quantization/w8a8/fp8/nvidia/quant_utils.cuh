@@ -466,6 +466,12 @@ __inline__ __device__ Float8_ scaled_vec_conversion<Float8_, uint2>(
   return res;
 }
 
+// 说明：__NV_SATFINITE 表示饱和转换（Saturate） + 有限值约束（Finite）
+// 饱和转换：当源数据超出目标数据格式的有效数值范围时，不进行溢出报错，而是将其「裁剪」（饱和）到目标格式的边界值。
+//  - 对比无饱和转换：若不启用 SAT，超出范围的数值可能产生随机溢出值，导致后续计算异常。
+// 有限值约束：确保转换结果是有限的有效浮点数，严格排除特殊浮点值：+Infinity（正无穷）、-Infinity（负无穷）、NaN（非数值，如 0/0、sqrt (-1)）。
+//  - 若源数据是 ±Infinity：转换为目标格式的最大 / 最小有效值（同饱和转换的边界值）；
+//  - 若源数据是 NaN：通常归一化为目标格式的 0 或最大有效值（具体由 CUDA 版本和目标格式决定，优先保证结果可计算）；
 // half -> fp8
 template <>
 __inline__ __device__ uint8_t scaled_vec_conversion<uint8_t, uint16_t>(
@@ -476,6 +482,7 @@ __inline__ __device__ uint8_t scaled_vec_conversion<uint8_t, uint16_t>(
   return (uint8_t)res;
 }
 
+// 已阅
 // bf16 -> fp8
 template <>
 __inline__ __device__ uint8_t scaled_vec_conversion<uint8_t, __nv_bfloat16>(
@@ -491,6 +498,7 @@ __inline__ __device__ uint8_t scaled_vec_conversion<uint8_t, __nv_bfloat16>(
   __builtin_unreachable();  // Suppress missing return statement warning
 }
 
+// 已阅
 // float -> fp8
 template <>
 __inline__ __device__ uint8_t scaled_vec_conversion<uint8_t, float>(
@@ -525,6 +533,7 @@ __inline__ __device__ Tout convert(const Tin& x) {
   __builtin_unreachable();  // Suppress missing return statement warning
 }
 
+// 已阅
 template <typename Tout, typename Tin, Fp8KVCacheDataType kv_dt>
 __inline__ __device__ Tout scaled_convert(const Tin& x, const float scale) {
   #ifdef ENABLE_FP8
@@ -538,6 +547,9 @@ __inline__ __device__ Tout scaled_convert(const Tin& x, const float scale) {
   __builtin_unreachable();  // Suppress missing return statement warning
 }
 
+  // 已阅
+  // 说明：cache_t 表示输出类型，scalar_t 表示输入类型；
+  // 输出类型的确定与 scalar_t (SRC_DTYPE) 和 kv_dt (KV_DTYPE) 有关
   // The following macro is used to dispatch the conversion function based on
   // the data type of the key and value cache. The FN is a macro that calls a
   // function with template<typename scalar_t, typename cache_t,

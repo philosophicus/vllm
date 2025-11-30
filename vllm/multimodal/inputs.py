@@ -138,6 +138,7 @@ The UUID will be used to identify the item for all caching purposes
 """
 
 
+# 已阅
 @dataclass(frozen=True)
 class PlaceholderRange:
     """
@@ -194,6 +195,11 @@ class PlaceholderRange:
         if self.embeds_cumsum is None:
             return start_idx, end_idx
 
+        # 说明：按照上面的例子 is_embed=[False, True, False, True, True]，self.embeds_cumsum = [0, 1, 1, 2, 3]
+        # start_idx = 3, end_idx = 5，这里的 idx 应该是 1-based 的位置索引
+        # embeds_start_idx = self.embeds_cumsum[3-1] = 1
+        # embeds_end_idx = self.embeds_cumsum[5-1] = 3
+        # 得到的结果是 [1, 3)；参考评论中提到的结果是第 2 和第 3 个 embedding，说明这里的 idx 是 0-based 的，且应该是左闭右开区间
         embeds_start_idx = (
             int(self.embeds_cumsum[start_idx - 1]) if start_idx > 0 else 0
         )
@@ -201,6 +207,7 @@ class PlaceholderRange:
 
         return embeds_start_idx, embeds_end_idx
 
+    # 技巧
     def extract_embeds_range(self) -> list[tuple[int, int]]:
         """Extract the start and end indices of the embedded region in prompt.
 
@@ -216,10 +223,15 @@ class PlaceholderRange:
         if self.is_embed is None:
             return [(self.offset, self.offset + self.length - 1)]
 
+        # 说明：mask_i = [0, 1, 0, 1, 1]
         mask_i = self.is_embed.int()
+        # 说明：[0] + [0, 1, 0, 1, 1] = [0, 0, 1, 0, 1, 1] -> diff ->
+        # [0, 1, -1, 1, 0] -> == 1 -> [False, True, False, True, False] -> nonzero -> [1, 3]
         starts = torch.nonzero(
             torch.diff(mask_i, prepend=mask_i.new_zeros(1)) == 1
         ).flatten()
+        # 说明：[0, 1, 0, 1, 1] + [0] = [0, 1, 0, 1, 1, 0] -> diff -> 
+        # [1, -1, 1, 0, -1] -> == -1 -> [False, True, False, False, True] -> nonzero -> [1, 4]
         ends = torch.nonzero(
             torch.diff(mask_i, append=mask_i.new_zeros(1)) == -1
         ).flatten()
@@ -235,6 +247,7 @@ class PlaceholderRange:
         if self.is_embed is None:
             return other.is_embed is None
         if other.is_embed is None:
+            # 问题：这里 self.is_embed 肯定不为 None，因为 is None 会在上面 return 掉
             return self.is_embed is None
 
         return nested_tensors_equal(self.is_embed, other.is_embed)
@@ -251,6 +264,7 @@ Uses a list instead of a tensor if the dimensions of each element do not match.
 """
 
 
+# 已阅
 def nested_tensors_equal(a: NestedTensors, b: NestedTensors) -> bool:
     """
     Equality check between
@@ -259,6 +273,7 @@ def nested_tensors_equal(a: NestedTensors, b: NestedTensors) -> bool:
     if isinstance(a, torch.Tensor):
         return isinstance(b, torch.Tensor) and torch.equal(a, b)
     elif isinstance(b, torch.Tensor):
+        # 问题：这里 a 肯定不为 Tensor，因为 Tensor 会在上面 return 掉
         return isinstance(a, torch.Tensor) and torch.equal(b, a)
 
     if isinstance(a, list):
@@ -266,6 +281,7 @@ def nested_tensors_equal(a: NestedTensors, b: NestedTensors) -> bool:
             nested_tensors_equal(a_, b_) for a_, b_ in zip(a, b)
         )
     if isinstance(b, list):
+        # 说明：这里 a 肯定不为 list，因为 list 会在上面 return 掉
         return isinstance(a, list) and all(
             nested_tensors_equal(b_, a_) for b_, a_ in zip(b, a)
         )
@@ -274,6 +290,7 @@ def nested_tensors_equal(a: NestedTensors, b: NestedTensors) -> bool:
     return a == b
 
 
+# 已阅
 def _nested_tensors_h2d(
     tensors: NestedTensors,
     device: torch.types.Device,
@@ -306,6 +323,8 @@ def batched_tensors_equal(a: BatchedTensorInputs, b: BatchedTensorInputs) -> boo
     return all(k in b and nested_tensors_equal(a[k], b[k]) for k in a)
 
 
+# 已阅
+# 说明：包含数据、模态信息、位置信息、标识符等
 @dataclass
 class MultiModalFeatureSpec:
     """
@@ -345,6 +364,7 @@ class MultiModalFeatureSpec:
         return dict(kwargs)
 
 
+# 已阅
 @dataclass
 class MultiModalFieldElem:
     """
@@ -375,6 +395,8 @@ class MultiModalFieldElem:
     in `EngineCore`.
     """
 
+    # 说明：build_elems 方法返回 Sequence[MultiModalFieldElem]，
+    # reduce_data 方法返回 NestedTensors
     field: "BaseMultiModalField"
     """
     Defines how to combine the tensor data of this field with others
@@ -399,6 +421,8 @@ class MultiModalFieldElem:
         )  # noqa: E721
 
 
+# 已阅
+# 说明：子类包括 MultiModalBatchedField、MultiModalFlatField、MultiModalSharedField
 @dataclass(frozen=True, kw_only=True)
 class BaseMultiModalField(ABC):
     """
@@ -413,6 +437,7 @@ class BaseMultiModalField(ABC):
     when `MultiModalKwargsItems.get_data()` is called to batch the data.
     """
 
+    # 说明：返回用于创建 MultiModalFieldElem 实例的工厂函数
     def _field_factory(self, *, modality: str, key: str):
         f = partial(
             MultiModalFieldElem,
@@ -453,6 +478,7 @@ class BaseMultiModalField(ABC):
     ) -> NestedTensors:
         raise NotImplementedError
 
+    # 说明：合并多个 MultiModalFieldElem 实例的数据，要求 Field 类型相同
     def reduce_data(
         self,
         elems: list[MultiModalFieldElem],
@@ -481,6 +507,9 @@ class BaseMultiModalField(ABC):
         return _nested_tensors_h2d(out, device=device)
 
 
+# 已阅
+# 说明：对 shape 相同的 Tensor 列表做 torch.stack；或返回 batch 本身
+# 说明：对比 MultiModalFlatField 使用的是 torch.concat
 @dataclass(frozen=True, kw_only=True)
 class MultiModalBatchedField(BaseMultiModalField):
     """
@@ -523,6 +552,10 @@ class MultiModalBatchedField(BaseMultiModalField):
         return batch
 
 
+# 已阅
+# 说明：在 dim 维度上对除 dim 维度外 shape 相同的 Tensor 列表做 concat；
+# 或者在 0 维度上对嵌套 list 做 flatten；
+# 说明：对比 MultiModalBatchedField 使用的是 torch.stack
 @dataclass(frozen=True, kw_only=True)
 class MultiModalFlatField(BaseMultiModalField):
     """
@@ -542,9 +575,12 @@ class MultiModalFlatField(BaseMultiModalField):
     ) -> Sequence[MultiModalFieldElem]:
         field_factory = self._field_factory(modality=modality, key=key)
         if not is_list_of(self.slices, slice, check="all"):
+            # 说明：针对 Sequence[Sequence[slice]] 的情况
             assert isinstance(data, torch.Tensor), (
                 "torch.Tensor is required for multiple slices"
             )
+        # 说明：cast 本质是一个「类型注解工具」，仅用于静态类型检查，不会执行任何运行时的数据类型转换，
+        # 也不会做任何数据校验或修改
         return [field_factory(data[cast(slice, s)]) for s in self.slices]
 
     def _reduce_data(
@@ -561,6 +597,7 @@ class MultiModalFlatField(BaseMultiModalField):
                 # - will achieve zero-copy if the tensor is contiguous
                 return batch[0].contiguous()
 
+            # 说明：支持负数 dim
             dim = self.dim + (self.dim < 0) * len(batch[0].shape)
 
             def _shape_before_after(tensor: torch.Tensor):
@@ -583,6 +620,8 @@ class MultiModalFlatField(BaseMultiModalField):
         return [e for elem in batch for e in elem]
 
 
+# 已阅
+# 说明：共享同一份数据
 @dataclass(frozen=True, kw_only=True)
 class MultiModalSharedField(BaseMultiModalField):
     """
@@ -599,6 +638,7 @@ class MultiModalSharedField(BaseMultiModalField):
         data: NestedTensors,
     ) -> Sequence[MultiModalFieldElem]:
         field_factory = self._field_factory(modality=modality, key=key)
+        # 说明：共享同一份数据
         return [field_factory(data)] * self.batch_size
 
     def _reduce_data(
@@ -831,6 +871,8 @@ class MultiModalFieldConfig:
         return self.field.build_elems(self.modality, key, batch)
 
 
+# 已阅
+# 说明：MultiModalFieldElem 实例的 kv 映射集合，仅支持同种模态
 class MultiModalKwargsItem(UserDict[str, MultiModalFieldElem]):
     """
     A collection of

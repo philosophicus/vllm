@@ -57,6 +57,7 @@ def as_iter(obj: T | Iterable[T]) -> Iterable[T]:
     return obj
 
 
+# 已阅
 def is_list_of(
     value: object,
     typ: type[T] | tuple[type[T], ...],

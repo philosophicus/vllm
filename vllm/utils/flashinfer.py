@@ -35,6 +35,7 @@ FLASHINFER_CUBINS_REPOSITORY = os.environ.get(
 )
 
 
+# 已阅
 @functools.cache
 def has_flashinfer_cubin() -> bool:
     """Return `True` if flashinfer-cubin package is available."""
@@ -46,6 +47,7 @@ def has_flashinfer_cubin() -> bool:
     return False
 
 
+# 已阅
 @functools.cache
 def has_flashinfer() -> bool:
     """Return `True` if flashinfer-python package is available."""
@@ -167,6 +169,7 @@ def has_flashinfer_all2all() -> bool:
     return True
 
 
+# 已阅
 @functools.cache
 def has_flashinfer_moe() -> bool:
     """Return `True` if FlashInfer MoE module is available."""

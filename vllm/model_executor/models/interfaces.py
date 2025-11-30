@@ -53,6 +53,7 @@ The output embeddings must be one of the following formats:
 """
 
 
+# 说明：已阅
 def _require_is_multimodal(is_multimodal: Tensor | None) -> Tensor:
     """
     A helper function to be used in the context of
@@ -175,14 +176,19 @@ class SupportsMultiModal(Protocol):
         handle_oov_mm_token: bool = False,
     ) -> Tensor: ...
 
+    # 已阅
     def _embed_text_input_ids(
         self,
         input_ids: Tensor,
+        # 说明：接收一个 tensor，返回一个 tensor
         embed_input_ids: Callable[[Tensor], Tensor],
         *,
         is_multimodal: Tensor | None,
         handle_oov_mm_token: bool,
     ) -> Tensor:
+        # 说明：handle_oov_mm_token=True 表示处理多模态 token id 超出语言模型词汇表大小的情况，
+        # 即此时只对文本 token 调用语言模型的 embed_input_ids 方法，返回的结果中只包含文本 token 的嵌入，
+        # 多模态 token 的嵌入留出未初始化的空位
         if handle_oov_mm_token and is_multimodal is not None:
             is_text = ~is_multimodal
             text_embeds = embed_input_ids(input_ids[is_text])
@@ -198,6 +204,7 @@ class SupportsMultiModal(Protocol):
     def embed_input_ids(
         self,
         input_ids: Tensor,
+        # 说明：由 2D tensor 组成的 list 或 tuple；或者一个 3D tensor
         multimodal_embeddings: MultiModalEmbeddings | None = None,
         *,
         is_multimodal: Tensor | None = None,
@@ -224,6 +231,7 @@ class SupportsMultiModal(Protocol):
             handle_oov_mm_token=handle_oov_mm_token,
         )
 
+        # 说明：不是多模态输入，直接返回文本嵌入
         if multimodal_embeddings is None or len(multimodal_embeddings) == 0:
             return inputs_embeds
 
@@ -438,6 +446,7 @@ def _supports_lora(model: type[object] | object) -> bool:
     return isinstance(model, SupportsLoRA)
 
 
+# 说明：MRO = Method Resolution Order
 @runtime_checkable
 class SupportsPP(Protocol):
     """The interface required for all models that support pipeline parallel."""
@@ -503,6 +512,7 @@ def supports_pp(model: type[object]) -> TypeIs[type[SupportsPP]]: ...
 def supports_pp(model: object) -> TypeIs[SupportsPP]: ...
 
 
+# 已阅
 def supports_pp(
     model: type[object] | object,
 ) -> bool | TypeIs[type[SupportsPP]] | TypeIs[SupportsPP]:
@@ -539,13 +549,18 @@ def supports_pp(
     return supports_attributes and supports_inspect
 
 
+# 说明：检查 model 类或对象是否实现了 SupportsPP 协议所要求的属性和方法
 def _supports_pp_attributes(model: type[object] | object) -> bool:
+    # 说明：对类进行检查
     if isinstance(model, type):
         return isinstance(model, _SupportsPPType)
 
+    # 说明：对对象进行检查
     return isinstance(model, SupportsPP)
 
 
+# 已阅
+# 说明：检查 model.forward 方法是否支持 intermediate_tensors 关键字参数
 def _supports_pp_inspect(model: type[object] | object) -> bool:
     model_forward = getattr(model, "forward", None)
     if not callable(model_forward):
@@ -692,6 +707,7 @@ class MixtureOfExperts(Protocol):
     moe_layers: Iterable[nn.Module]
     """List of MoE layers in this model."""
 
+    # 已阅
     def set_eplb_state(
         self,
         expert_load_view: Tensor,
@@ -731,6 +747,7 @@ class MixtureOfExperts(Protocol):
     ) -> None: ...
 
 
+# 已阅
 def is_mixture_of_experts(model: object) -> TypeIs[MixtureOfExperts]:
     return (
         isinstance(model, MixtureOfExperts) and getattr(model, "num_moe_layers", 0) > 0

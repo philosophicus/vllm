@@ -21,6 +21,26 @@ from vllm.model_executor.layers.fused_moe.modular_kernel import (
 logger = init_logger(__name__)
 
 
+# 说明：由非模块化融合 MoE（量化）方法和模块化 MoE 组成的融合 MoE 模块化方法，
+# 用于替换非模块化融合 MoE（量化）方法；
+# old_quant_method 属性保存被替换的非模块化融合 MoE（量化）方法实例，
+# fused_experts 属性保存新创建的 FusedMoEModularKernel 实例；
+# old_quant_method 和当前类都是 QuantizeMethodBase 的子类，
+# 而 FusedMoEModularKernel 继承自 nn.Module；
+# 层级关系是 FusedMoE 层使用 FusedMoEModularMethod 方法，
+# FusedMoEModularMethod 方法使用 FusedMoEModularKernel 模块；
+# FusedMoEModularKernel 由 FusedMoEPrepareAndFinalize 和 FusedMoEPermuteExpertsUnpermute 
+# 实例组成，执行 MoE 前向计算逻辑：
+# - prepare (input activation quantization)
+# - prepare (all2all dispatch)
+# - permute
+# - matmul with weight w1
+# - activation + mul
+# - quantization
+# - matmul with weight w2
+# - unpermute
+# - finalize (maybe topk weight application + reduction)
+# - finalize (all2all combine)
 # --8<-- [start:modular_fused_moe]
 @CustomOp.register("modular_fused_moe")
 class FusedMoEModularMethod(FusedMoEMethodBase, CustomOp):

@@ -113,6 +113,7 @@ def _register_group(group: "GroupCoordinator") -> None:
     _groups[group.unique_name] = weakref.ref(group)
 
 
+# 已阅
 def all_reduce(tensor: torch.Tensor, group_name: str) -> torch.Tensor:
     assert group_name in _groups, f"Group {group_name} is not found."
     group = _groups[group_name]()
@@ -495,6 +496,8 @@ class GroupCoordinator:
             return input_
 
         if self.use_custom_op_call:
+            # 说明：参考上面的注释，传入 group name，在 custom op 中查找对应的 GroupCoordinator 实例，
+            # 再调用实例的 _all_reduce_out_place 方法完成实际的 all-reduce 操作
             return torch.ops.vllm.all_reduce(input_, group_name=self.unique_name)
         else:
             return self._all_reduce_out_place(input_)
@@ -502,6 +505,7 @@ class GroupCoordinator:
     def _all_reduce_out_place(self, input_: torch.Tensor) -> torch.Tensor:
         if self.device_communicator is None:
             raise ValueError("No device communicator found")
+        # 问题：这里并没有看出是 out-of-place，看起来是 in-place 的？
         return self.device_communicator.all_reduce(input_)
 
     def all_gather(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
@@ -1527,11 +1531,13 @@ def patch_tensor_parallel_group(tp_group: GroupCoordinator):
         _TP = old_tp_group
 
 
+# 已阅
 def get_tensor_model_parallel_world_size() -> int:
     """Return world size for the tensor model parallel group."""
     return get_tp_group().world_size
 
 
+# 已阅
 def get_tensor_model_parallel_rank() -> int:
     """Return my rank for the tensor model parallel group."""
     return get_tp_group().rank_in_group
@@ -1622,6 +1628,9 @@ def cleanup_dist_env_and_memory(shutdown_ray: bool = False):
         logger.warning("torch._C._host_emptyCache() only available in Pytorch >=2.5")
 
 
+# 说明：source_rank 是本地 rank
+# 说明：source_rank 所在的进程作为源进程，尝试创建一个共享内存段，其他进程尝试访问该共享内存段，
+# 如果能成功访问并读取到预定义的 magic_message，则说明这些进程和 source_rank 进程在同一个节点上
 def in_the_same_node_as(
     pg: ProcessGroup | StatelessProcessGroup, source_rank: int = 0
 ) -> list[bool]:
@@ -1660,6 +1669,7 @@ def in_the_same_node_as(
                 shm = shared_memory.SharedMemory(create=True, size=128)
                 shm.buf[: len(magic_message)] = magic_message
                 if isinstance(pg, ProcessGroup):
+                    # 说明：src 是全局 rank
                     torch.distributed.broadcast_object_list(
                         [shm.name], src=ranks[source_rank], group=pg
                     )

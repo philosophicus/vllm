@@ -18,6 +18,9 @@ from vllm.v1.kv_offload.worker.cpu_gpu import CpuGpuOffloadingHandlers
 from vllm.v1.kv_offload.worker.worker import OffloadingHandler
 
 
+# 已阅
+# 说明：OffloadingSpec 获取 OffloadingManager 和 OffloadingHandler 的实例，
+# 其中 OffloadingHandler 会注册到 OffloadingWorker 中
 class CPUOffloadingSpec(OffloadingSpec):
     def __init__(self, vllm_config: VllmConfig, kv_cache_config: KVCacheConfig):
         super().__init__(vllm_config, kv_cache_config)
@@ -28,6 +31,7 @@ class CPUOffloadingSpec(OffloadingSpec):
                 "cpu_bytes_to_use must be specified in kv_connector_extra_config"
             )
 
+        # 待看
         # calculate kv_bytes_per_offloaded_block
         assert kv_cache_config is not None
         page_sizes = {
@@ -54,11 +58,18 @@ class CPUOffloadingSpec(OffloadingSpec):
         # scheduler-side
         self._manager: OffloadingManager | None = None
 
+        # 说明：后续会注册到 OffloadingWorker 中
         # worker-side
         self._handlers: CpuGpuOffloadingHandlers | None = None
 
         self.eviction_policy: str = self.extra_config.get("eviction_policy", "lru")
 
+    # 已阅
+    # 说明：used by the scheduler-side offloading connector 
+    # to track offloaded blocks and manage evictions
+    # 说明：OffloadingManager 用于管理 load 和 offload 两个操作，
+    # 包括准备/结束 load，准备/结束 store (offload)；
+    # 具体何时 load/offload、load/offload 什么由 OffloadingConnectorScheduler 决定
     def get_manager(self) -> OffloadingManager:
         if not self._manager:
             kv_events_config = self.vllm_config.kv_events_config
@@ -66,6 +77,7 @@ class CPUOffloadingSpec(OffloadingSpec):
                 kv_events_config is not None and kv_events_config.enable_kv_cache_events
             )
 
+            # 说明：用于分配/释放 Block 和获取 LoadStoreSpec
             backend = CPUBackend(
                 block_size=self.offloaded_block_size, num_blocks=self.num_blocks
             )
@@ -85,6 +97,8 @@ class CPUOffloadingSpec(OffloadingSpec):
                 )
         return self._manager
 
+    # 已阅
+    # 说明：used by the worker-side offloading connector
     def get_handlers(
         self,
         kv_caches: dict[str, torch.Tensor],
@@ -96,6 +110,7 @@ class CPUOffloadingSpec(OffloadingSpec):
                     "CPU Offloading is currently only supported on CUDA-alike GPUs"
                 )
 
+            # 说明：用于实际执行 KV 块的加载/存储操作，GPU 上的 kv_caches 会被传入该 handler
             self._handlers = CpuGpuOffloadingHandlers(
                 attn_backends=attn_backends,
                 gpu_block_size=self.gpu_block_size,

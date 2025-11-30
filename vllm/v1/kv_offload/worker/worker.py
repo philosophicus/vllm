@@ -15,6 +15,8 @@ TransferResult = tuple[int, bool]
 logger = init_logger(__name__)
 
 
+# 已阅
+# 说明：实现类参考 SingleDirectionOffloadingHandler
 class OffloadingHandler(ABC):
     """
     OffloadingHandler class for managing asynchronous KV data transfers
@@ -63,6 +65,8 @@ class OffloadingHandler(ABC):
         """
 
 
+# 已阅
+# 说明：OffloadingWorker 管理多个 OffloadingHandler
 class OffloadingWorker:
     """
     OffloadingWorker class for managing asynchronous KV data transfers

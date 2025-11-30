@@ -60,6 +60,7 @@ class EplbModelState:
     """EPLB metrics."""
 
     physical_to_logical_map: torch.Tensor
+    # 说明：下面的例子表明 physical_to_logical_map 并不会体现 EP rank 的相关信息
     """
     Mapping from physical experts to logical experts.
 
@@ -76,6 +77,10 @@ class EplbModelState:
     ```
     """
     logical_to_physical_map: torch.Tensor
+    # 说明：最后一个维度是 num_redundant_experts + 1，用于存储每个 logical expert 对应的 physical experts 列表
+    # 理解：num_redundant_experts + 1 表示每个 logical expert 至少有一个 physical expert，
+    # 每个 logical expert 最多再实例化 num_redundant_experts 个 physical experts，
+    # 最后一共是 num_redundant_experts + 1 个 physical experts
     """
     Mapping from logical experts to physical experts.
 
@@ -211,7 +216,10 @@ class EplbState:
     def __init__(self, parallel_config: ParallelConfig, device: torch.device):
         self.parallel_config = parallel_config
         self.device = device
+        # 说明：Key is the model config hash.
+        # 理解：Each model has its own EPLB state.
         self.model_states: dict[str, EplbModelState] = {}
+        # 说明：目前只支持 DefaultEplbPolicy
         self.policy: type[AbstractEplbPolicy] = DefaultEplbPolicy
         """
         Selected EPLB algorithm class
@@ -264,6 +272,7 @@ class EplbState:
             if self.cuda_device_index is None and torch.cuda.is_available():
                 self.cuda_device_index = torch.cuda.current_device()
 
+    # 已阅
     @staticmethod
     def build_initial_global_physical_to_logical_map(
         num_routed_experts: int,
@@ -279,11 +288,14 @@ class EplbState:
                 that the corresponding physical expert maps to.
         """
         global_physical_to_logical_map = list(range(num_routed_experts))
+        # 说明：利用 routed experts 从 0 开始循环分配冗余专家
         global_physical_to_logical_map += [
             i % num_routed_experts for i in range(num_redundant_experts)
         ]
         return global_physical_to_logical_map
 
+    # 已阅
+    # 说明：要求维护的所有 model 的 ep 配置必须一致
     def validate_ep_configuration(self, new_model: MixtureOfExperts):
         """
         Validate that the expert parallel configuration of
@@ -396,11 +408,13 @@ class EplbState:
             .contiguous()
         )
 
+        # 说明：单次 forward pass 中每个 physical expert 的负载（token 数）
         expert_load_pass = torch.zeros(
             (model.num_moe_layers, model.num_physical_experts),
             dtype=torch.int32,
             device=self.device,
         )
+        # 说明：默认支持最近 1000 次的负载记录
         self.expert_load_window_size = self.parallel_config.eplb_config.window_size
         expert_load_window = torch.zeros(
             (
@@ -413,6 +427,7 @@ class EplbState:
         )
 
         # Set the initial progress of rearrangement to 3/4
+        # 说明：再经过 1/4 的 step_interval 后，就会触发下一次 rearrangement
         eplb_step_interval = self.parallel_config.eplb_config.step_interval
         self.expert_rearrangement_step = max(
             0, eplb_step_interval - eplb_step_interval // 4
@@ -424,6 +439,7 @@ class EplbState:
         self.policy = EPLB_POLICIES[policy_type]
         logger.debug("Selected EPLB policy: %s", policy_type)
         if global_expert_load is not None:
+            # 说明：当前有 global_expert_load，则进行第一次 expert rearrangement
             ep_group = get_ep_group().device_group
             assert global_expert_load.shape == (
                 model.num_moe_layers,
@@ -432,8 +448,11 @@ class EplbState:
             assert global_expert_load.dtype == torch.int64
 
             num_replicas = model.num_physical_experts
+            # 说明：对 expert 进行分组
             num_groups = model.num_expert_groups
+            # 说明：总节点数
             num_nodes = get_node_count()
+            # 说明：EP 进程数 / GPU 数
             num_gpus = ep_group.size()
 
             if num_gpus % num_nodes != 0:
@@ -459,6 +478,7 @@ class EplbState:
 
             max_physical_slots = new_logical_to_physical_map.shape[-1]
             assert max_physical_slots <= logical_to_physical_map.shape[-1]
+            # 说明：在最后一维左侧不进行填充，右侧填充 logical_to_physical_map.shape[-1] - max_physical_slots 个 -1
             new_logical_to_physical_map = torch.nn.functional.pad(
                 new_logical_to_physical_map,
                 (0, logical_to_physical_map.shape[-1] - max_physical_slots),
@@ -475,7 +495,9 @@ class EplbState:
             new_logical_replica_count = None
         model.set_eplb_state(
             expert_load_pass,
+            # 说明：默认值为 -1
             logical_to_physical_map,
+            # 说明：默认值全为 0
             logical_replica_count,
         )
         if global_expert_load is not None:

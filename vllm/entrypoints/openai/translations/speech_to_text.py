@@ -93,6 +93,7 @@ class OpenAISpeechToText(OpenAIServing):
         self.default_sampling_params = self.model_config.get_diff_sampling_param()
         self.task_type = task_type
 
+        # 说明：asr = automatic speech recognition
         self.asr_config = self.model_cls.get_speech_to_text_config(
             self.model_config, task_type
         )
@@ -167,8 +168,11 @@ class OpenAISpeechToText(OpenAIServing):
                 _ = librosa.feature.melspectrogram(
                     y=dummy_audio,
                     sr=self.asr_config.sample_rate,
+                    # 说明：梅尔滤波器数量
                     n_mels=getattr(feature_extractor, "n_mels", 128),
+                    # 说明：FFT 窗口长度，越大频率分辨率越高，时间分辨率越低（trade-off）
                     n_fft=getattr(feature_extractor, "n_fft", 400),
+                    # 说明：帧移
                     hop_length=getattr(feature_extractor, "hop_length", 160),
                 )
 

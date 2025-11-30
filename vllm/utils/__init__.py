@@ -12,6 +12,7 @@ def random_uuid() -> str:
     return f"{uuid.uuid4().int & MASK_64_BITS:016x}"  # 16 hex chars
 
 
+# 已阅
 def length_from_prompt_token_ids_or_embeds(
     prompt_token_ids: list[int] | None,
     prompt_embeds: torch.Tensor | None,

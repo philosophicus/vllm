@@ -248,5 +248,6 @@ def attn_type(attn_type: AttnTypeStr):
     return func
 
 
+# 已阅
 def get_attn_type(model: type[object] | object) -> AttnTypeStr:
     return getattr(model, "attn_type", "decoder")

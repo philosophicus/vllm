@@ -634,6 +634,7 @@ __inline__ __device__ Tout scaled_convert(const Tin& x, const float scale) {
   return {};  // Squash missing return statement warning
 }
 
+  // 已阅
   // The following macro is used to dispatch the conversion function based on
   // the data type of the key and value cache. The FN is a macro that calls a
   // function with template<typename scalar_t, typename cache_t,

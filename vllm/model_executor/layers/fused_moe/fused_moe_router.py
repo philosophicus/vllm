@@ -7,6 +7,7 @@ import torch
 from vllm.model_executor.layers.fused_moe.config import RoutingMethodType
 
 
+# 说明：唯一的实现类为 FusedMoERouterImpl
 class FusedMoERouter(ABC):
     """
     FusedMoERouter is an abstract class that provides a 'select_experts'
@@ -18,6 +19,7 @@ class FusedMoERouter(ABC):
     def routing_method_type(self) -> RoutingMethodType:
         raise NotImplementedError
 
+    # 关注点：当 EPLB 未启用时，返回的 ids 都是全局逻辑 id
     @abstractmethod
     def select_experts(
         self,

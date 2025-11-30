@@ -82,6 +82,7 @@ class Request:
         else:
             raise ValueError("sampling_params and pooling_params can't both be unset")
 
+        # 问题：最后一个 token 也是 prompt token 吗？
         self.prompt_token_ids = prompt_token_ids
         self.prompt_embeds = prompt_embeds
         self.num_prompt_tokens = length_from_prompt_token_ids_or_embeds(

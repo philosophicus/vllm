@@ -33,12 +33,14 @@ def get_fp8_min_max() -> tuple[float, float]:
     return finfo.min, finfo.max
 
 
+# 已阅
 # Use proxy as NamedTuple direct subclasses cannot have static members
 class _GroupShape(NamedTuple):
     row: int
     col: int
 
 
+# 已阅
 class GroupShape(_GroupShape):
     """
     This class describes the quantization group shape.

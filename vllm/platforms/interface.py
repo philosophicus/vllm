@@ -42,6 +42,7 @@ class PlatformEnum(enum.Enum):
     TPU = enum.auto()
     XPU = enum.auto()
     CPU = enum.auto()
+    # 说明：非原生支持的设备类型，方便通过设备插件扩展
     OOT = enum.auto()
     UNSPECIFIED = enum.auto()
 
@@ -172,6 +173,7 @@ class Platform:
     def get_max_output_tokens(self, prompt_len: int) -> int:
         return sys.maxsize
 
+    # 已阅
     def is_cuda_alike(self) -> bool:
         """Stateless version of [torch.cuda.is_available][]."""
         return self._enum in (PlatformEnum.CUDA, PlatformEnum.ROCM)
@@ -461,6 +463,7 @@ class Platform:
 
         return CpuArchEnum.OTHER if machine else CpuArchEnum.UNKNOWN
 
+    # 已阅
     @classmethod
     def is_pin_memory_available(cls) -> bool:
         """Checks whether pin memory is available on the current platform."""
@@ -653,6 +656,8 @@ class Platform:
         """
         return False
 
+    # 说明：仅在 TpuPlatform 中返回 True
+    # 参考 https://github.com/vllm-project/tpu-inference/blob/main/tpu_inference/platforms/tpu_platform.py
     @classmethod
     def use_sync_weight_loader(cls) -> bool:
         """
@@ -671,6 +676,9 @@ class Platform:
         def _synced_weight_loader(param, *args, **kwargs):
             out = original_weight_loader(param, *args, **kwargs)
             if param.device != torch.device("cpu"):
+                # 说明：源码参考 https://github.com/pytorch/pytorch/blob/main/torch/_inductor/distributed_autotune.py#L189
+                # 说明：在 TPU 上需要同步执行权重加载，_sync 内部执行 allgather 操作，可以触发 TPU 延迟式执行
+                # TPU 延迟执行的触发条件包括但不限于：Host 读取；显示同步调用；跨设备通信等
                 torch._sync(param)
             return out
 

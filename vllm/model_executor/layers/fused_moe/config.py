@@ -101,6 +101,7 @@ def _quant_flags_to_group_shape(
     return a_shape, w_shape
 
 
+# 已阅
 # The type of method in top-K routing
 # Please keep this in sync with the counterpart defined in https://github.com/flashinfer-ai/flashinfer/blob/main/include/flashinfer/trtllm/fused_moe/runner.h
 class RoutingMethodType(IntEnum):
@@ -121,6 +122,7 @@ class RoutingMethodType(IntEnum):
     Unspecified = 6.0
 
 
+# 说明：保持激活或权重的量化描述
 @dataclass
 class FusedMoEQuantDesc:
     """
@@ -142,10 +144,12 @@ class FusedMoEQuantDesc:
     #               (i.e. per-token-per-group)
     shape: GroupShape | None = None
 
+    # 说明：PrecisionConfig 仅当使用 GPT OSS Triton Kernels 时才会用到
     # Quantization scales.
     # TODO(bnell): maybe put PrecisionConfigs in subclass of QuantDesc?
     scale: Union[torch.Tensor, "PrecisionConfig", None] = None
 
+    # 理解：NVFP4 的二级缩放因子，gscale = global scale
     # Quantization alphas or gscales, used for nvfp4 types.
     # W4A8 FP8: used for per-channel scales
     # TODO(bnell): put some of these in subclasses
@@ -845,6 +849,7 @@ def biased_moe_quant_config(
 FUSED_MOE_UNQUANTIZED_CONFIG: FusedMoEQuantConfig = FusedMoEQuantConfig.make()
 
 
+# 已阅
 @dataclass
 class FusedMoEParallelConfig:
     tp_size: int
@@ -929,18 +934,18 @@ class FusedMoEParallelConfig:
             When TP = 1, DP(PCP) = 2 and EP = False, the configuration on different
                 devices:
 
-            - device 0 : TP = {2, 0} DP = {2, 0} EP = {1, 0}
-            - device 1 : TP = {2, 1} DP = {2, 1} EP = {1, 0}
+            - device 0 : TP = {1, 0} DP = {2, 0} EP = {1, 0}
+            - device 1 : TP = {1, 0} DP = {2, 1} EP = {1, 0}
             - Comment: There are 2 engine instances and the tensors are sharded
                 across 2 decvices.
 
             When TP = 2, DP(PCP) = 2 and EP = False, the configuration on different
                 devices:
 
-            - device 0: TP = {4, 0} DP = {2, 0} EP = {1, 0}
-            - device 1: TP = {4, 1} DP = {2, 0} EP = {1, 0}
-            - device 2: TP = {4, 2} DP = {2, 1} EP = {1, 0}
-            - device 3: TP = {4, 3} DP = {2, 1} EP = {1, 0}
+            - device 0: TP = {2, 0} DP = {2, 0} EP = {1, 0}
+            - device 1: TP = {2, 1} DP = {2, 0} EP = {1, 0}
+            - device 2: TP = {2, 0} DP = {2, 1} EP = {1, 0}
+            - device 3: TP = {2, 1} DP = {2, 1} EP = {1, 0}
             - Comment: There are 2 engine instances and the tensors are sharded
                 across 4 devices.
 
@@ -998,8 +1003,9 @@ class FusedMoEParallelConfig:
             )
         # DP + EP / TP + EP / DP + TP + EP
         assert use_ep
-        # In EP, each device owns a set of experts fully. There is no tensor
-        # parallel update tp_size, tp_rank, ep_size and ep_rank to reflect that.
+        # In EP, each device owns a set of experts fully. There is no tensor parallel,
+        # update tp_size, tp_rank, ep_size and ep_rank to reflect that.
+        # 说明：在使用专家并行时，每个设备完整拥有一组专家，不再进行张量并行
         ep_size = tp_size
         ep_rank = tp_rank
         return FusedMoEParallelConfig(
@@ -1036,6 +1042,10 @@ class FusedMoEConfig:
 
     has_bias: bool = False
 
+    # 说明：true 表示 gated moe，false 表示 non-gated moe
+    # gated moe: w2(act_fn(w1(x)) * w3(x))
+    # non-gated moe: w2(act_fn(w1(x)))
+    # 说明：w1: gate；w2: down；w3: up
     is_act_and_mul: bool = True
 
     is_lora_enabled: bool = False

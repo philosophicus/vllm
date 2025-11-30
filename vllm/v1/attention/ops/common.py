@@ -260,6 +260,7 @@ def cp_lse_ag_out_ar(
     return out
 
 
+# 已阅
 @triton.jit
 def _pack_seq_kernel(
     x_ptr,  # [N, D]
@@ -287,8 +288,10 @@ def _pack_seq_kernel(
     # valid time positions for this block
     t_mask = off_t < Lmax
 
+    # 说明：计算 block 负责的所有行（token）在原序列中的 index
     # compute input row indices for valid (b, t)
     in_row = in_start + off_t
+    # 理解：这里判断逻辑有点多余，seq_len 一定小于等于 Lmax
     valid_row = (off_t < seq_len) & t_mask
 
     # Pointers
@@ -308,6 +311,10 @@ def _pack_seq_kernel(
     tl.store(out_row_ptr, x_vals, mask=valid_row[:, None] & d_mask)
 
 
+# 已阅
+# 说明：把不同长度的拼接在一起的序列打包成一个 batch 的张量，每个 batch 的长度与最长的子序列长度一致；
+# 长度不足的部分（Lmax - seq_len）用 pad_value 填充
+# 说明：与之相对的操作是 unpack_seq_triton
 def pack_seq_triton(
     x: torch.Tensor,
     lengths: torch.Tensor,
@@ -346,6 +353,7 @@ def pack_seq_triton(
 
     out = torch.empty((B, Lmax, D), device=x.device, dtype=x.dtype)
 
+    # 说明：一个 block 处理一个序列的 BLOCK_T 个时间步和 BLOCK_D 个特征
     grid = (B, triton.cdiv(Lmax, block_t), triton.cdiv(D, block_d))
     _pack_seq_kernel[grid](
         x_reshaped,
@@ -369,6 +377,7 @@ def pack_seq_triton(
     return out
 
 
+# 已阅
 @triton.jit
 def _unpack_seq_triton_kernel(
     packed_ptr,  # [B, Lmax, D]
@@ -394,6 +403,7 @@ def _unpack_seq_triton_kernel(
 
     # valid time positions for this block
     t_mask = off_t < Lmax
+    # 理解：这里判断逻辑有点多余，seq_len 一定小于等于 Lmax
     valid_row = (off_t < seq_len) & t_mask
 
     # compute output row indices for valid (b, t)
@@ -412,6 +422,8 @@ def _unpack_seq_triton_kernel(
     tl.store(out_row_ptr, packed_vals, mask=valid_row[:, None] & d_mask)
 
 
+# 已阅
+# 说明：与之相对的是 pack_seq_triton
 def unpack_seq_triton(
     packed_tensor: torch.Tensor,
     lengths: torch.Tensor,

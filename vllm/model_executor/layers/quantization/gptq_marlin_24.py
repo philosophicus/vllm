@@ -32,6 +32,7 @@ GPTQ_MARLIN_24_SUPPORTED_QUANT_TYPES = [scalar_types.uint4b8, scalar_types.uint8
 GPTQ_MARLIN_24_SUPPORTED_GROUP_SIZES = [-1, 128]
 
 
+# 已阅
 class GPTQMarlin24Config(QuantizationConfig):
     """Config class for Marlin24."""
 
@@ -70,6 +71,7 @@ class GPTQMarlin24Config(QuantizationConfig):
         # Tile size used by marlin kernels.
         self.tile_size = 16
 
+        # 说明：权重矩阵的 shape 为 (out_dim, in_dim) = (N, K)
         # Min out_features dim
         self.min_n_threads = GPTQ_MARLIN_24_MIN_THREAD_N
 
@@ -138,6 +140,8 @@ class GPTQMarlin24Config(QuantizationConfig):
         return None
 
 
+# 说明：Marlin24 即 Sparse Marlin，参考 https://github.com/IST-DASLab/Sparse-Marlin
+# 24 指 2:4 sparsity，即每 4 个连续的权重中有 2 个为零。
 class GPTQMarlin24LinearMethod(LinearMethodBase):
     """Linear method for Marlin24.
 

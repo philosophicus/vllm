@@ -146,6 +146,8 @@ class Qwen3_VisionPatchEmbed(nn.Module):
         self.hidden_size = hidden_size
 
         kernel_size = (temporal_patch_size, patch_size, patch_size)
+        # 说明：输出 size 为 (batch_size, hidden_size, T, H, W)
+        # 其中 T, H, W 分别为时间、空间高度、空间宽度方向的 patch 数量
         self.proj = Conv3dLayer(
             in_channels,
             hidden_size,
@@ -156,8 +158,12 @@ class Qwen3_VisionPatchEmbed(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         L, C = x.shape
+        # 说明：(batch_size, in_channels, kernel_time, kernel_height, kernel_width)
         x = x.view(L, -1, self.temporal_patch_size, self.patch_size, self.patch_size)
+        # 说明：经过 Conv3dLayer 后，shape 为 (B, hidden_size, T, H, W)
+        # L = B * T * H * W
         x = self.proj(x).view(L, self.hidden_size)
+        # 说明：输出 shape 为 (seq_len, hidden_size)
         return x
 
 
@@ -471,6 +477,7 @@ class Qwen3_VisionTransformer(nn.Module):
 
         return cos_combined, sin_combined
 
+    # 说明：利用双线性插值计算位置嵌入，从原尺寸插值到目标尺寸
     def fast_pos_embed_interpolate(self, grid_thw: list[list[int]]) -> torch.Tensor:
         num_grid_per_side = self.num_grid_per_side
         m_size = self.spatial_merge_size
@@ -478,6 +485,7 @@ class Qwen3_VisionTransformer(nn.Module):
 
         outputs = []
         for t, h, w in grid_thw:
+            # 说明：等间距采样，分别在高度和宽度方向上采样 h 和 w 个点
             h_idxs = torch.linspace(
                 0, num_grid_per_side - 1, h, dtype=torch.float32, device=self.device
             )
@@ -485,16 +493,19 @@ class Qwen3_VisionTransformer(nn.Module):
                 0, num_grid_per_side - 1, w, dtype=torch.float32, device=self.device
             )
 
+            # 说明：计算出每个采样点对应的四个邻近网格点的索引
             h_floor = h_idxs.to(torch.long)
             w_floor = w_idxs.to(torch.long)
             h_ceil = torch.clamp(h_floor + 1, max=num_grid_per_side - 1)
             w_ceil = torch.clamp(w_floor + 1, max=num_grid_per_side - 1)
 
+            # 说明：计算出每个采样点在高度和宽度方向上距离左/上侧邻近网格点的距离，用于双线性插值的权重计算
             dh = h_idxs - h_floor
             dw = w_idxs - w_floor
 
             # Create meshgrid view for all h, w vars
             dh_grid, dw_grid = torch.meshgrid(dh, dw, indexing="ij")
+            # 说明：shape 为 (h, w)
             h_floor_grid, w_floor_grid = torch.meshgrid(h_floor, w_floor, indexing="ij")
             h_ceil_grid, w_ceil_grid = torch.meshgrid(h_ceil, w_ceil, indexing="ij")
 
@@ -505,26 +516,36 @@ class Qwen3_VisionTransformer(nn.Module):
             # w11 = dh_grid * dw_grid
             # we reuse w11 here to avoid duplicate
             # dh_grid * dw_grid computation
+            # 说明：四个邻近网格点的权重，shape 为 (h, w)
             w11 = dh_grid * dw_grid
             w10 = dh_grid - w11
             w01 = dw_grid - w11
             w00 = 1 - dh_grid - w01
 
+            # 说明：四个邻近网格点的索引，shape 为 (4, h，w)
             h_grid = torch.stack([h_floor_grid, h_floor_grid, h_ceil_grid, h_ceil_grid])
             w_grid = torch.stack([w_floor_grid, w_ceil_grid, w_floor_grid, w_ceil_grid])
             h_grid_idx = h_grid * num_grid_per_side
 
+            # 说明：indices shape 为 (4, h * w)
             indices = (h_grid_idx + w_grid).reshape(4, -1)
+            # 说明：weights shape 为 (4, h * w, 1)
             weights = torch.stack([w00, w01, w10, w11], dim=0).reshape(4, -1, 1)
             weights = weights.to(dtype=self.dtype)
 
+            # 说明：pos_embed 被当作 lookup table，embeds shape 为 (4, h * w, hidden_dim)
             embeds = self.pos_embed(indices)
             embeds *= weights
+            # 说明：shape 为 (h * w, hidden_dim)
             combined = embeds.sum(dim=0)
 
             combined = combined.reshape(
                 h // m_size, m_size, w // m_size, m_size, hidden_dim
             )
+            # 说明：先交换维度，shape 为 (h//m_size, w//m_size, m_size, m_size, hidden_dim)
+            # 之后再 reshape，shape 为 (1, ((h//m_size)*(w//m_size)*m_size*m_size), hidden_dim)
+            # 之后再 expand 到 (t, ((h//m_size)*(w//m_size)*m_size*m_size), hidden_dim)
+            # reshape 到 (t*(h//m_size)*(w//m_size)*m_size*m_size, hidden_dim)
             combined = combined.permute(0, 2, 1, 3, 4).reshape(1, -1, hidden_dim)
             repeated = combined.expand(t, -1, -1).reshape(-1, hidden_dim)
             outputs.append(repeated)
@@ -543,12 +564,15 @@ class Qwen3_VisionTransformer(nn.Module):
             max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max()
         return max_seqlen
 
+    # 待看
     def forward(
         self,
         x: torch.Tensor,
         grid_thw: torch.Tensor | list[list[int]],
     ) -> torch.Tensor:
         hidden_states = x.to(device=self.device, dtype=self.dtype, non_blocking=True)
+        # 说明：hidden_states shape 为 (seq_len, hidden_size)，seq_len = B * T * H * W
+        # 其中 B 为 batch_size，T, H, W 分别为时间、空间高度、空间宽度方向的 patch 数量
         hidden_states = self.patch_embed(hidden_states)
 
         if isinstance(grid_thw, list):
@@ -1743,6 +1767,7 @@ class Qwen3VLForConditionalGeneration(
 
         return [len(seg) for seg in segments]
 
+    # 说明：在 prune media tokens 后，重新计算 mrope positions
     def recompute_mrope_positions(
         self,
         input_ids: list[int],
@@ -1925,6 +1950,7 @@ class Qwen3VLForConditionalGeneration(
                 multimodal_embeddings += tuple(video_embeddings)
         return multimodal_embeddings
 
+    # 已阅
     def _compute_deepstack_embeds(
         self,
         inputs_embeds: torch.Tensor,
@@ -1971,6 +1997,7 @@ class Qwen3VLForConditionalGeneration(
         input_ids: torch.Tensor,
         multimodal_embeddings: MultiModalEmbeddings | None = None,
         *,
+        # 说明: shape 为 (total_num_scheduled_tokens, ) 的布尔值
         is_multimodal: torch.Tensor | None = None,
         handle_oov_mm_token: bool = False,
     ) -> torch.Tensor:

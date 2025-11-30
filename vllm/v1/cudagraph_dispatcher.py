@@ -58,11 +58,15 @@ class CudagraphDispatcher:
 
         self.keys_initialized = False
 
+    # 已阅
+    # 理解：uniform_decode 表示是否是均匀解码场景。均匀解码场景下，
+    # 每个序列的解码长度相同，等于 uniform_decode_query_len
     def _create_padded_batch_descriptor(
         self, num_tokens: int, uniform_decode: bool, has_lora: bool
     ) -> BatchDescriptor:
         max_num_seqs = self.vllm_config.scheduler_config.max_num_seqs
         uniform_decode_query_len = self.uniform_decode_query_len
+        # 说明：获得 num_tokens 对应的 padded cudagraph capture size
         num_tokens_padded = self.vllm_config.pad_for_cudagraph(num_tokens)
 
         if uniform_decode and self.cudagraph_mode.has_mode(CUDAGraphMode.FULL):
@@ -79,6 +83,7 @@ class CudagraphDispatcher:
             has_lora=has_lora,
         )
 
+    # 已阅
     def add_cudagraph_key(
         self, runtime_mode: CUDAGraphMode, batch_descriptor: BatchDescriptor
     ):
@@ -87,6 +92,8 @@ class CudagraphDispatcher:
         )
         self.cudagraph_keys[runtime_mode].add(batch_descriptor)
 
+    # 已阅
+    # 问题：cudagraph keys 是做什么用的
     def initialize_cudagraph_keys(
         self, cudagraph_mode: CUDAGraphMode, uniform_decode_query_len: int
     ):
@@ -96,6 +103,8 @@ class CudagraphDispatcher:
 
         # LoRA activation cases to specialize the cuda graphs on
         if self.vllm_config.lora_config:
+            # 说明：如果启用了 cudagraph_specialize_lora，则
+            # 需要同时考虑有无 LoRA 的情况
             if self.compilation_config.cudagraph_specialize_lora:
                 lora_cases = [True, False]
             else:
@@ -112,6 +121,10 @@ class CudagraphDispatcher:
             ):
                 self.add_cudagraph_key(
                     cudagraph_mode.mixed_mode(),
+                    # 问题：此时 mixed mode 为 FULL 或 PIECEWISE
+                    # 如何理解下面传 uniform_decode=False？mixed mode 如何理解？
+                    # mixed mode 指同时存在 prefill 和 decode 时的 cudagraph mode？
+                    # 而同时存在 prefill 和 decode，此时为非均匀解码场景？
                     self._create_padded_batch_descriptor(
                         bs, False, has_lora
                     ).relax_for_mixed_batch_cudagraphs(),
@@ -121,12 +134,19 @@ class CudagraphDispatcher:
         # mode full cudagraphs then add them here.
         if (
             cudagraph_mode.decode_mode() == CUDAGraphMode.FULL
+            # 说明：此时 mixed mode 为 NONE 或 PIECEWISE
+            # 问题：mixed mode 为 NONE 或 PIECEWISE 对请求数量无限制？
+            # 所以用 uniform_decode=True 来计算 key？
             and cudagraph_mode.separate_routine()
         ):
+            # 说明：使用 uniform_decode_query_len 和 max_num_seqs 计算出最大值
             max_num_tokens = (
                 uniform_decode_query_len
                 * self.vllm_config.scheduler_config.max_num_seqs
             )
+            # 说明：过滤出适合 decode 的 cudagraph capture sizes，范围在
+            # [uniform_decode_query_len, max_num_tokens]，即对应的请求数量在
+            # [1, max_num_seqs] 范围内
             cudagraph_capture_sizes_for_decode = [
                 x
                 for x in self.compilation_config.cudagraph_capture_sizes

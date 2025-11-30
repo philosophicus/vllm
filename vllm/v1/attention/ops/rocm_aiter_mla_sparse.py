@@ -12,6 +12,8 @@ from vllm.platforms import current_platform
 logger = init_logger(__name__)
 
 
+# 已阅
+# 说明：计算 lightning indexer 的 index scores，论文（https://arxiv.org/pdf/2512.02556）中的式 1
 # Take from https://github.com/deepseek-ai/DeepGEMM/blob/main/tests/test_attention.py#L84
 def fp8_mqa_logits_torch(
     q: torch.Tensor,
@@ -39,6 +41,7 @@ def fp8_mqa_logits_torch(
     """
     k_fp8, scale = kv
     seq_len_kv = k_fp8.shape[0]
+    # 说明：转换为 bfloat16 再进行计算
     k = k_fp8.to(torch.bfloat16)
     q = q.to(torch.bfloat16)
 
@@ -48,9 +51,12 @@ def fp8_mqa_logits_torch(
     mask_hi = (
         torch.arange(0, seq_len_kv, device="cuda")[None, :] < cu_seqlen_ke[:, None]
     )
+    # 说明：shape 为 [m, n]，每行表示针对该 q 位置，哪些 k 位置是有效的
     mask = mask_lo & mask_hi
 
+    # 说明：每个 head 计算 QK，转换为 float 类型，再乘以对应的 scale 和权重 
     score = torch.einsum("mhd,nd->hmn", q, k).float() * scale
+    # 说明：[h, m, n] * [h, m, 1] -> [h, m, n].sum(dim=0) -> [m, n]
     logits = (score.relu() * weights.unsqueeze(-1).transpose(0, 1)).sum(dim=0)
     logits = logits.masked_fill(~mask, float("-inf"))
 
@@ -97,10 +103,13 @@ def rocm_fp8_mqa_logits(
         return fp8_mqa_logits_torch(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke)
 
 
+# 已阅
+# 说明：与 fp8_mqa_logits_torch 类似，但使用了 paged kv-cache
 # Taken from https://github.com/deepseek-ai/DeepGEMM/blob/main/tests/test_attention.py#L156
 def fp8_paged_mqa_logits_torch(
     q: torch.Tensor,
     kv_cache: torch.Tensor,
+    # 说明：shape 为 [B * next_n, H]
     weights: torch.Tensor,
     context_lens: torch.Tensor,
     block_tables: torch.Tensor,
@@ -109,10 +118,14 @@ def fp8_paged_mqa_logits_torch(
     from vllm.utils.math_utils import cdiv
 
     fp8_dtype = current_platform.fp8_dtype()
+    # 说明：q: [B, next_n, H, D]
     batch_size, next_n, _, dim = q.size()
+    # 说明：每个 token 的 dim 和 scale 是拼接在一起的
     kv_cache, scale = kv_cache[..., :dim], kv_cache[..., dim:]
     scale = scale.contiguous().view(torch.float)
+    # 说明：q 转为 float 类型，而不是像 fp8_mqa_logits_torch 那样转为 bfloat16
     q = q.float()
+    # 说明：kv_cache 转为 float 类型
     kv_cache = kv_cache.view(fp8_dtype).float() * scale
     num_block, block_size, _, dim = kv_cache.size()
     logits = torch.full(
@@ -124,12 +137,15 @@ def fp8_paged_mqa_logits_torch(
     context_lens = context_lens.tolist()
     for i in range(batch_size):
         context_len = context_lens[i]
+        # 说明：query 和 context 尾部对齐，计算 query 每个 token 的 offset
         q_offsets = torch.arange(context_len - next_n, context_len, device="cuda")
+        # 说明：weight_slice 的 shape 为 [H, next_n]
         weight_slice = (
             weights[i * next_n : (i + 1) * next_n, :].transpose(0, 1).contiguous()
         )
         for block_rk in range(cdiv(context_len, block_size)):
             block_idx = block_tables[i][block_rk]
+            # 说明：kx 的 shape 为 [block_size, 1, D]
             qx, kx = q[i], kv_cache[block_idx]
             k_offsets = torch.arange(
                 block_rk * block_size, (block_rk + 1) * block_size, device="cuda"
@@ -139,6 +155,7 @@ def fp8_paged_mqa_logits_torch(
             )
             s = torch.where(
                 mask[None, :, :],
+                # 说明：[H, next_n, D] @ [1, D, block_size] -> [H, next_n, block_size]
                 (qx.transpose(0, 1) @ kx.transpose(0, 1).transpose(1, 2)).to(
                     logits.dtype
                 ),

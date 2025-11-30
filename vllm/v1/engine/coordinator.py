@@ -216,10 +216,13 @@ class DPCoordinatorProc:
                 events = poller.poll(timeout=max(min_timeout, wait_for - elapsed))
                 if not events:
                     # Poller timeout - publish current stats to front-ends.
+                    # 有事件优先处理事件，没有事件才走这里
                     if last_step_counts is not None:
+                        # 有更新的统计数据未发布，发布它们
                         engine_req_counts_list = last_step_counts
                         last_step_counts = None
                     else:
+                        # 没有更新的统计数据，获取当前的统计数据
                         engine_req_counts_list = self._get_engine_counts()
                         stats_changed = False
 
@@ -250,15 +253,22 @@ class DPCoordinatorProc:
                             for _ in range(new_engine_count - current_count):
                                 self.engines.append(EngineState())
                             # NOTE(yongji): handle the case
-                            # where newly started engines have current_wave = 0
+                            # where newly started engines have current_wave = 0,
                             # if existing engines just finished a wave
-                            # and engine_running isn't updated yet at
-                            # CoordinatorProc requests routed to newly started
+                            # and engines_running isn't updated yet at
+                            # CoordinatorProc, requests routed to newly started
                             # engines may not wake up existing engines, as long
                             # as 0 < request.wave < existing engines'
                             # current_wave
                             # we note that 0 is the wave number for the new
                             # engine
+                            # 说明：这里设置 engines_running = False 是为了后面能进入
+                            # if not engines_running 分支，从而能够正确地唤醒所有引擎
+                            # 什么情况不能唤醒所有引擎呢？新引擎的 current_wave = 0，
+                            # 当其收到 request_wave > 0 的请求时，
+                            # 新引擎只会更新自己的 current_wave，
+                            # 并不会通知 coordinator，所以就不会唤醒其他引擎，
+                            # 此时需要 coordinator 来通知所有引擎
                             engines_running = False
                             logger.info(
                                 "DPCoordinator scaled up from %s to %s engines",
@@ -312,10 +322,24 @@ class DPCoordinatorProc:
                         stats_step = scheduler_stats.step_counter
                         stats_wave = scheduler_stats.current_wave
                         if (
+                            # 说明：更新的 wave 或 step 比之前的大，说明存在新的统计数据
                             stats_wave > last_stats_wave
                             or stats_wave == last_stats_wave
                             and stats_step > last_stats_step
                         ):
+                            # 说明：stats_update 的更新逻辑：
+                            # - 只要存在新的统计数据，就会更新为 True
+                            # - 在发布过一次 last_step_counts（旧统计值）之后一直没有新的统计数据，
+                            #   再发布一次当前统计值（新统计值）后会被重置为 False
+                            # last_step_counts 的更新逻辑：
+                            # - 发布之后会被重置为 None
+                            # - 存在新的统计数据时会被更新为当前统计数据的副本，此时可能有两种情况：
+                            #   - 发布完 last_step_counts 之后来了新的统计数据（last_step_counts 为 None 的情况）
+                            #   - 一直没有机会发布 last_step_counts 就来了新的统计数据 (last_step_counts 不为 None 的情况)
+                            # 这里的关键点是，系统里有两个版本的统计数据：
+                            # - 待发布的统计数据（last_step_counts）
+                            # - 当前统计数据（self.engines 中的 request_counts）
+                            # 两版数据的产生过程是：先将历史统计数据保存为 last_step_counts，再更新历史统计数据为最新统计数据
                             if stats_changed:
                                 last_step_counts = self._get_engine_counts(do_copy=True)
                             last_stats_step = stats_step

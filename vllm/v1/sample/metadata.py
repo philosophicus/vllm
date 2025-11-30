@@ -14,7 +14,9 @@ class SamplingMetadata:
     all_greedy: bool
     all_random: bool
 
+    # 说明：(num_reqs, ) 即 (batch_size, )
     top_p: torch.Tensor | None
+    # 说明：(num_reqs, ) 即 (batch_size, )
     top_k: torch.Tensor | None
 
     generators: dict[int, torch.Generator]

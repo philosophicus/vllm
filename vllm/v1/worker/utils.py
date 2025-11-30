@@ -131,6 +131,9 @@ class MultiModalBudget:
             self.cache.clear_cache()
 
 
+# 已阅
+# 说明：对 KVCacheGroupSpec 细分之后的结果，根据 (Attention Backend, KVCacheSpec) 细分，得到对应的 layers；
+# 相同的 kv_cache_group_id 可能对应多个 AttentionGroup 实例
 @dataclass
 class AttentionGroup:
     backend: type[AttentionBackend]
@@ -144,6 +147,7 @@ class AttentionGroup:
         default_factory=lambda: []
     )
 
+    # 每个 AttentionGroup 创建对应的 metadata builder
     def create_metadata_builders(
         self,
         vllm_config,
@@ -151,11 +155,14 @@ class AttentionGroup:
         kernel_block_size: int | None,
         num_metadata_builders: int = 1,
     ):
+        # 说明：构建物理 block size 对应的 kv_cache_spec
+        # 优先使用 kernel_block_size
         kv_cache_spec_builder = (
             self.kv_cache_spec.copy_with_new_block_size(kernel_block_size)
             if kernel_block_size is not None
             else self.kv_cache_spec
         )
+        # 所有 builder 感知到的 block size 都是物理 block size
         self.metadata_builders = [
             self.backend.get_builder_cls()(
                 kv_cache_spec_builder,
@@ -247,6 +254,7 @@ def gather_mm_placeholders(
     return placeholders[is_embed]
 
 
+# 已阅
 def request_memory(init_snapshot: MemorySnapshot, cache_config: CacheConfig) -> int:
     """
     Calculate the amount of memory required by vLLM, then validate
@@ -270,6 +278,8 @@ def request_memory(init_snapshot: MemorySnapshot, cache_config: CacheConfig) -> 
     return requested_memory
 
 
+# 已阅
+# 说明：把与目标层共享 KV Cache 的层加入目标层所属的 KVCacheGroupSpec；将这一层加入 runner_only_attn_layers
 def add_kv_sharing_layers_to_kv_cache_groups(
     shared_kv_cache_layers: dict[str, str],
     kv_cache_groups: list[KVCacheGroupSpec],
@@ -301,6 +311,8 @@ def add_kv_sharing_layers_to_kv_cache_groups(
             runner_only_attn_layers.add(layer_name)
 
 
+# 已阅
+# 说明：根据层的顺序，依次把对应的 kv_cache Tensor 添加到 runner_kv_caches 中
 def bind_kv_cache(
     kv_caches: dict[str, torch.Tensor],
     forward_context: dict[str, Attention],
@@ -352,12 +364,14 @@ def bind_kv_cache(
                 pass
             else:
                 raise NotImplementedError
+        # 问题：包含多个层时，为什么只取第一个层对应的 kv_cache ？
         layer_name = layer_names[0]
         runner_kv_caches.append(kv_caches[layer_name])
 
     # Bind kv_caches to forward context
     for layer_name, kv_cache in kv_caches.items():
         # NOTE: Use list because of v0 PP virtual engine.
+        # 说明：每层 Attention 模块使用自己的 kv_cache 视图，但底层内存可能是被多层共享的
         forward_context[layer_name].kv_cache = [kv_cache]
 
 

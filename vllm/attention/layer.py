@@ -289,6 +289,7 @@ class Attention(nn.Module, AttentionLayerBase):
         compilation_config = vllm_config.compilation_config
         if prefix in compilation_config.static_forward_context:
             raise ValueError(f"Duplicate layer name: {prefix}")
+        # 说明：会在模型执行前在 bind_kv_cache 内被访问，以绑定实际的 kv_cache
         compilation_config.static_forward_context[prefix] = self
         self.attn_type = attn_type
 
@@ -303,6 +304,7 @@ class Attention(nn.Module, AttentionLayerBase):
         # use a placeholder kv cache tensor during init, which will be replaced
         # by bind_kv_cache
         # this variable will not be accessed if use_direct_call is True
+        # 说明：bind_kv_cache 会在模型执行前被调用以绑定实际的 kv_cache
         self.kv_cache = [
             torch.tensor([])
             for _ in range(vllm_config.parallel_config.pipeline_parallel_size)

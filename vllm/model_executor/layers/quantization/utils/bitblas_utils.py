@@ -213,10 +213,14 @@ def unpack_gptq_qzeros(qzeros, bits, is_gptq_v2=False) -> torch.Tensor:
     return unpacked_zeros
 
 
+# 已阅
+# 理解：qweight 是转置后的结果，shape 应该是 [input_dim, output_dim]，
+# 且 output_dim 是打包后的维度
 def unpack_gptq_qweight(qweight, bits):
     qweight = qweight.view(torch.int8)
     elems_per_int8 = 8 // bits
     unpacked_weight = torch.zeros(
+        # 说明：dypte 是 int8 时，unpack 后的 shape 是 [input_dim, output_dim * elems_per_int8]
         (qweight.shape[0], qweight.shape[1] * elems_per_int8),
         dtype=torch.int8,
         device=qweight.device,
@@ -224,6 +228,8 @@ def unpack_gptq_qweight(qweight, bits):
     )
     for col in range(unpacked_weight.shape[1]):
         i = col % elems_per_int8
+        # 说明：unpack 后的每个元素是从 qweight 的对应位置右移 bits * i 位得到的
         unpacked_weight[:, col] = qweight[:, col // elems_per_int8] >> (bits * i)
 
+    # 说明：只保留最低的 bits 位
     return torch.bitwise_and(unpacked_weight, 2**bits - 1)

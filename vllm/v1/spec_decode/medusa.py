@@ -15,6 +15,7 @@ from vllm.v1.sample.metadata import SamplingMetadata
 logger = init_logger(__name__)
 
 
+# 已阅
 class MedusaProposer:
     """
     Medusa proposer class for generating token sequences
@@ -34,13 +35,16 @@ class MedusaProposer:
         )
         self.dtype = vllm_config.model_config.dtype
 
+    # 说明：Currently this only supports generating proposals from top-1 tokens
     def propose(
         self,
         target_hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> torch.Tensor:
         # Generate blocks and compute logits
+        # 说明：参考 class Medusa 的实现，blocks 表示 Medusa Heads 的输出张量列表
         blocks = self.model(target_hidden_states)
+        # 说明：logits 的 shape 为 num_heads 个 [batch_size, vocab_size] 
         logits = self.model.compute_logits(blocks)
 
         # Compute argmax for each Medusa head and stack into a single tensor
@@ -62,6 +66,7 @@ class MedusaProposer:
             and self.vllm_config.parallel_config.enable_eplb
         ), "EPLB for Medusa is not supported"
 
+    # 说明：禁用梯度计算，关闭自动求导引擎 + 省略梯度元数据张量存储 + 对模型权重等张量提供只读保护（高性能推理）
     @torch.inference_mode()
     def dummy_run(self, num_tokens: int) -> None:
         hidden_states = torch.zeros(

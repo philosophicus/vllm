@@ -5,6 +5,7 @@ import torch
 from vllm.config import VllmConfig
 
 
+# 已阅
 def init_speculator(
     vllm_config: VllmConfig,
     device: torch.device,
