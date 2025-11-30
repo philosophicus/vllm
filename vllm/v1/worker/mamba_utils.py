@@ -16,6 +16,7 @@ from vllm.v1.worker.gpu_input_batch import CachedRequestState
 from vllm.v1.worker.lora_model_runner_mixin import GPUInputBatch
 
 
+# 已阅
 @triton.jit
 def batch_memcpy_kernel(src_ptrs, dst_ptrs, sizes, BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(0)
@@ -35,6 +36,7 @@ def batch_memcpy_kernel(src_ptrs, dst_ptrs, sizes, BLOCK_SIZE: tl.constexpr):
         tl.store(curr_dst_ptr, data, mask=mask)
 
 
+# 已阅
 def batch_memcpy(src_ptrs, dst_ptrs, sizes):
     batch = src_ptrs.shape[0]
     assert dst_ptrs.shape[0] == batch
@@ -45,6 +47,8 @@ def batch_memcpy(src_ptrs, dst_ptrs, sizes):
     batch_memcpy_kernel[grid](src_ptrs, dst_ptrs, sizes, BLOCK_SIZE=BLOCK_SIZE)
 
 
+# 已阅
+# 说明：要求存在 Mamba 组且所有 Mamba 组的 MambaSpec 相同
 def get_mamba_groups(kv_cache_config: KVCacheConfig) -> tuple[list[int], MambaSpec]:
     mamba_group_ids: list[int] = []
     mamba_specs: list[MambaSpec] = []
@@ -58,11 +62,17 @@ def get_mamba_groups(kv_cache_config: KVCacheConfig) -> tuple[list[int], MambaSp
     return mamba_group_ids, mamba_specs[0]
 
 
+# 已阅
 def collect_mamba_copy_meta(
+    # 说明：输出
     src_state_list: list[int],
+    # 说明：输出
     dest_state_list: list[int],
+    # 说明：输出
     num_elements_list: list[int],
     kv_cache_config: KVCacheConfig,
+    # 说明：MambaStateCopyFuncCalculator 类中有获取每个模型 copy func 列表的方法，
+    # 包含拷贝模型的 conv_state 和 ssm_state 的不同方法
     mamba_state_copy_funcs: tuple[MambaStateCopyFunc, ...],
     mamba_group_ids: list[int],
     src_block_idx: int,
@@ -75,6 +85,7 @@ def collect_mamba_copy_meta(
         return
 
     for mamba_group_id in mamba_group_ids:
+        # 说明：当前 KV Cache 组的 Block IDs
         block_ids = req_state.block_ids[mamba_group_id]
         dest_block_id = block_ids[dest_block_idx]
         layer_names = kv_cache_config.kv_cache_groups[mamba_group_id].layer_names
@@ -83,14 +94,20 @@ def collect_mamba_copy_meta(
             kv_caches: list[torch.Tensor] = attention.kv_cache[0]
             for state, state_copy_func in zip(kv_caches, mamba_state_copy_funcs):
                 copy_spec = state_copy_func(
+                    # 说明：accept_token_bias + 1 是上一轮的 num_accepted_tokens
                     state, block_ids, src_block_idx, accept_token_bias + 1
                 )
 
+                # 说明：需要执行拷贝的起始地址，
+                # 对于 conv state 可能是 src block 的中间位置；对应 ssm state 可能是后面 block 的起始位置
                 src_state_list.append(copy_spec.start_addr)
+                # 说明：目标 block 的起始地址
                 dest_state_list.append(state[dest_block_id].data_ptr())
+                # 说明：需要拷贝的总的字节数
                 num_elements_list.append(copy_spec.num_elements * state.element_size())
 
 
+# 已阅
 def do_mamba_copy_block(
     src_state_list: list[int],
     dest_state_list: list[int],
@@ -107,6 +124,8 @@ def do_mamba_copy_block(
     batch_memcpy(src_state_ptrs, dst_state_ptrs, num_elements)
 
 
+# 已阅
+# 说明：只有在 align 模式下才会调用这个函数
 def preprocess_mamba(
     scheduler_output: SchedulerOutput,
     kv_cache_config: KVCacheConfig,
@@ -115,6 +134,8 @@ def preprocess_mamba(
     input_batch: GPUInputBatch,
     requests: dict[str, CachedRequestState],
     forward_context: dict[str, Any],
+    # 说明：MambaStateCopyFuncCalculator 类中有获取每个模型 copy func 列表的方法，
+    # 包含拷贝模型的 conv_state 和 ssm_state 的不同方法
     mamba_state_copy_funcs: tuple[MambaStateCopyFunc, ...],
 ):
     """
@@ -154,9 +175,12 @@ def preprocess_mamba(
         # Block 2: speculative block
         # Block 3: speculative block
         # And use block 1 to save the running state.
+        # 说明：我们总是把当前的 running 状态保存在倒数 (1 + num_speculative_blocks) 个 block 中，上面的例子中，
+        # 就是保存到倒数第 3 (= 1 + 2) 个 block 中，这个 block 的 0-based index 是 1 (= 4 - 1 - 2)
         curr_state_idx = num_blocks - 1 - num_speculative_blocks
         mamba_state_idx[req_id] = curr_state_idx
         if prev_state_idx != -1 and prev_state_idx != curr_state_idx:
+            # 说明：搜集拷贝数据
             collect_mamba_copy_meta(
                 src_state_list,
                 dest_state_list,
@@ -164,16 +188,22 @@ def preprocess_mamba(
                 kv_cache_config,
                 mamba_state_copy_funcs,
                 mamba_group_ids,
+                # 说明：last computed token 对应的 block idx
                 prev_state_idx,
+                # 说明：running 状态所在的 block，倒数 (1 + num_speculative_blocks) 个 block
                 curr_state_idx,
+                # 说明：上一轮 num_accepted_tokens - 1
                 input_batch.num_accepted_tokens_cpu[i] - 1,
                 req_state,
                 forward_context,
             )
+            # 理解：初始化本轮的 num_accepted_tokens，尤其是对于在 postprocess_mamba 中没有初始化的请求 
             input_batch.num_accepted_tokens_cpu[i] = 1
+    # 说明：执行数据拷贝
     do_mamba_copy_block(src_state_list, dest_state_list, num_elements_list)
 
 
+# 说明：只有在 align 模式下才会调用这个函数
 def postprocess_mamba(
     scheduler_output: SchedulerOutput,
     kv_cache_config: KVCacheConfig,
@@ -197,19 +227,29 @@ def postprocess_mamba(
     num_elements_list: list[int] = []
     for i, req_id in enumerate(input_batch.req_ids):
         req_state = requests[req_id]
+        # 说明：本轮开始时已经 computed 的 token 数量
         num_computed_tokens = req_state.num_computed_tokens
+        # 说明：本轮调度的 draft 的 token 数量
         num_draft_tokens = len(scheduled_spec_decode_tokens_dict.get(req_id, []))
+        # 说明：本轮 scheduled 的总 token 数量
         num_scheduled_tokens = num_scheduled_tokens_dict[req_id]
+        # 说明：本轮 accepted 的 token 数量，包括 bonus token 和 draft token
         num_accepted_tokens = num_accepted_tokens_cpu[i]
+        # 理解/问题：num_scheduled_tokens = 1 + num_draft_tokens
+        # 本轮最初 running state 所经过的 token 数量（已缓存的 + 参与计算但未缓存的）?
         num_tokens_running_state = (
             num_computed_tokens + num_scheduled_tokens - num_draft_tokens
         )
+        # 说明：num_tokens_running_state + num_accepted_tokens 是最新 running state 所经过的 token 数量，
+        # 减 1 是为了下一步正确计算 block 数量
         new_num_computed_tokens = num_tokens_running_state + num_accepted_tokens - 1
+        # 说明：cache block 必须是满的
         aligned_new_computed_tokens = (
             new_num_computed_tokens // mamba_spec.block_size * mamba_spec.block_size
         )
         # TODO: how to ensure all blocks that cache_blocks called are cached here?
         if aligned_new_computed_tokens >= num_tokens_running_state:
+            # 说明：有多少个 accepted token 需要补充（至 block 结尾）
             accept_token_bias = aligned_new_computed_tokens - num_tokens_running_state
             src_block_idx = mamba_state_idx[req_id]
             dest_block_idx = aligned_new_computed_tokens // mamba_spec.block_size - 1
@@ -220,12 +260,19 @@ def postprocess_mamba(
                 kv_cache_config,
                 mamba_state_copy_funcs,
                 mamba_group_ids,
+                # 说明：running 状态所在的 block
                 src_block_idx,
+                # 说明：最新的 full block
                 dest_block_idx,
                 accept_token_bias,
                 req_state,
                 forward_context,
             )
+            # 理解：当 src_block_ids != dest_block_idx 时，num_accepted_tokens 不会被重新初始化，
+            # 问题：在 preprocess_mamba 中会用到？
             if src_block_idx == dest_block_idx:
+                # 理解：当 src_block_idx == dest_block_idx，
+                # 如果 accepted_token == 0，此时不需要拷贝，collect_mamba_copy_meta 内部会直接返回；
+                # 如果 accepted_token > 0，此时需要把运行状态从 
                 num_accepted_tokens_cpu[i] = 1
     do_mamba_copy_block(src_state_list, dest_state_list, num_elements_list)

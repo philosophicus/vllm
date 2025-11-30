@@ -211,6 +211,7 @@ class InputProcessor:
         else:
             self._validate_singleton_mm_uuids(prompt)
 
+    # 已阅
     def _validate_lora(self, lora_request: LoRARequest | None) -> None:
         if lora_request is None:
             return
@@ -376,6 +377,7 @@ class InputProcessor:
             processed_inputs=processed_inputs,
         )
 
+        # 说明：input_preprocessor 里 tokenizer 的 eos_token_id
         eos_token_id = self.input_preprocessor.get_eos_token_id()
 
         encoder_inputs, decoder_inputs = split_enc_dec_inputs(processed_inputs)
@@ -391,6 +393,7 @@ class InputProcessor:
 
         sampling_params = None
         pooling_params = None
+        # 说明：params 是从 API 层传入的 SamplingParams 或 PoolingParams
         if isinstance(params, SamplingParams):
             # TODO: can we avoid cloning here in multiproc case?
             sampling_params = params.clone()

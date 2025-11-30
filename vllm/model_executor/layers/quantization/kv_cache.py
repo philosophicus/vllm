@@ -14,6 +14,7 @@ from vllm.v1.attention.backend import is_quantized_kv_cache
 logger = init_logger(__name__)
 
 
+# 说明：用于加载和处理 KV cache 量化因子的基类
 class BaseKVCacheMethod(QuantizeMethodBase):
     """
     Quant method that adds `_k_scale` and `_v_scale` attributes to the

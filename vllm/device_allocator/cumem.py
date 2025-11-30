@@ -46,6 +46,7 @@ except ModuleNotFoundError:
     libcudart = None
 
 # py_device, py_alignedSize, py_d_mem, py_p_memHandle
+# 说明：（设备指针？，分配大小，设备内存指针，内存句柄？）
 HandleType = tuple[int, int, int, int]
 
 
@@ -64,6 +65,7 @@ def unmap_and_release(allocation_handle: HandleType) -> None:
     python_unmap_and_release(*allocation_handle)
 
 
+# 已阅
 def get_pluggable_allocator(
     python_malloc_fn: Callable[[int], int], python_free_func: Callable[[int, int], None]
 ) -> torch.cuda.memory.CUDAPluggableAllocator:
@@ -74,6 +76,7 @@ def get_pluggable_allocator(
     return new_alloc
 
 
+# 已阅
 @contextmanager
 def use_memory_pool_with_allocator(
     python_malloc_fn: Callable[[int], int], python_free_func: Callable[[int, int], None]
@@ -84,6 +87,14 @@ def use_memory_pool_with_allocator(
         yield mem_pool, new_alloc
 
 
+# 待看
+# 说明：支撑实现 Sleep Mode 机制的内存池管理类；
+# cuMem* API 是虚拟内存管理的 CUDA Driver API，允许用户在 CUDA 设备上分配可分页的内存，
+# 并且可以在设备内存和主机内存之间进行迁移；vLLM 中使用 cuMem* API 来实现 Sleep Mode 机制，
+# 即在模型不活跃时将其占用的 GPU 内存迁移到 CPU 内存，从而释放 GPU 内存供其他模型使用；
+# 当模型需要再次活跃时，再将其占用的内存从 CPU 内存迁移回 GPU 内存；
+# cuMem* API 的使用详见 https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__VA.html ；
+# 此类为单例模式；
 class CuMemAllocator:
     """
     A singleton class that manages a memory pool for CUDA tensors.
@@ -132,6 +143,7 @@ class CuMemAllocator:
             "for the latest updates."
         )
 
+        # 说明：pointer_to_data 由 python_malloc_callback 和 python_free_callback 维护，记录当前内存池中所有分配的内存信息；
         self.pointer_to_data: dict[int, AllocationData] = {}
         self.current_tag: str = CuMemAllocator.default_tag
         self.allocator_and_pools: dict[str, Any] = {}
@@ -141,6 +153,7 @@ class CuMemAllocator:
         self.python_malloc_callback = self._python_malloc_callback
         self.python_free_callback = self._python_free_callback
 
+    # 说明：分配内存的回调函数
     def _python_malloc_callback(self, allocation_handle: HandleType) -> None:
         """
         Internal method to store the allocation data
@@ -157,6 +170,7 @@ class CuMemAllocator:
         )
         return
 
+    # 说明：释放内存的回调函数
     def _python_free_callback(self, ptr: int) -> HandleType:
         """
         Internal method to look up the allocation data
@@ -290,6 +304,7 @@ class CuMemAllocator:
                     unmap_and_release(handle)
             self.current_tag = old_tag
 
+    # 已阅
     def get_current_usage(self) -> int:
         """
         Get the total number of bytes allocated in the memory pool.

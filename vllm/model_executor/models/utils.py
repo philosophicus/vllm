@@ -45,6 +45,7 @@ WeightsMapping = Mapping[str, str | None]
 """If a key maps to a value of `None`, the corresponding weight is ignored."""
 
 
+# 已阅
 @dataclass
 class WeightsMapper:
     """Maps the name of each weight if they match the following patterns."""
@@ -409,6 +410,7 @@ def flatten_bn(
     return [x_n for x_b in x for x_n in x_b]
 
 
+# 已阅
 def _flatten_embeddings(embeddings: NestedTensors) -> torch.Tensor:
     """
     Recursively flattens and concatenates NestedTensors on all but the last
@@ -422,6 +424,8 @@ def _flatten_embeddings(embeddings: NestedTensors) -> torch.Tensor:
     return torch.cat(tuple(_flatten_embeddings(t) for t in embeddings))
 
 
+# 已阅
+# 说明：嵌入数量表达式，如 "2 x 3 + 4 x 5"
 def _embedding_count_expression(embeddings: NestedTensors) -> str:
     """
     Constructs a debugging representation of the number of embeddings in the
@@ -442,9 +446,13 @@ def split_list_into_ranges(lst: torch.Tensor, interval: int) -> list[list[int]]:
     return ranges
 
 
+# 已阅
+# 说明：将 multimodal_embeddings 合并到 input_embeds 中，
+# 具体覆盖的位置对应了 input_ids 中的占位符 token 位置
 def _merge_multimodal_embeddings(
     inputs_embeds: torch.Tensor,
     multimodal_embeddings: NestedTensors,
+    # 说明: shape 为 (total_num_scheduled_tokens, ) 的布尔值
     is_multimodal: torch.Tensor,
 ) -> torch.Tensor:
     """
@@ -467,7 +475,10 @@ def _merge_multimodal_embeddings(
 
         # NOTE: This can avoid D2H sync (#22105), but fails to
         # raise an error if is_multimodal.sum() < len(mm_embeds_flat)
+        # 理解：is_multimodal.sum() < len(mm_embeds_flat) 表示多模态嵌入的数量超过了占位符 token 的数量
         inputs_embeds.masked_scatter_(
+            # 理解：unsqueeze(-1) 是为了扩展维度以匹配 inputs_embeds 的形状，
+            # 让最后的特征维度要么每一位都用多模态嵌入覆盖，要么都不覆盖
             is_multimodal.unsqueeze(-1), mm_embeds_flat.to(dtype=input_dtype)
         )
     except RuntimeError as e:
@@ -593,10 +604,13 @@ def no_init_weights(
             yield
 
 
+# 已阅
 class LayerFn(Protocol):
     def __call__(self, prefix: str) -> torch.nn.Module: ...
 
 
+# 已阅
+# 说明：用于 pipeline parallelism 的占位层
 class PPMissingLayer(torch.nn.Identity):
     """
     A placeholder layer for missing layers in a pipeline parallel model.
@@ -614,16 +628,21 @@ _CPU_OFFLOAD_BYTES = 0
 _CPU_OFFLOAD_MAX_BYTES = 0
 
 
+# 已阅
 def set_cpu_offload_max_bytes(max_bytes: int) -> None:
     global _CPU_OFFLOAD_MAX_BYTES, _CPU_OFFLOAD_BYTES
     _CPU_OFFLOAD_BYTES = 0
     _CPU_OFFLOAD_MAX_BYTES = max_bytes
 
 
+# 已阅
+# 说明：将 module 的参数 offload 到 CPU 上，
+# 如果参数已经在 CPU 上或者已经 offload 的参数总量超过了 max_bytes，则不进行 offloading
 def maybe_offload_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
     if (params := next(module.parameters(), None)) is None:
         return module
 
+    # 说明：第一个参数所在的设备被用来判断是否需要进行 CPU offloading，如果是 CPU 则不进行 offloading
     device = params.device
 
     if device == torch.device("cpu"):
@@ -659,10 +678,14 @@ def maybe_offload_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
         )
         cpu_data.copy_(p.data)
         if not uva_offloading:
+            # 说明：uva_offloading 为 False 时，直接使用 CPU tensor 作为参数数据，
+            # 在访问参数数据时会有 CPU 到 GPU 的数据传输开销，参考下面 not uva_offloading 分支中的内容
             p.data = cpu_data
         else:
             # keep the cpu data alive
             p._vllm_offloaded_cpu_data = cpu_data
+            # 说明：uva_offloading 为 True 时，使用 get_accelerator_view_from_cpu_tensor 获取一个 UVA 视图作为参数数据，
+            # 不会产生 CPU 到 GPU 的数据传输开销，但需要确保 CPU tensor 在参数生命周期内一直存在
             p.data = get_accelerator_view_from_cpu_tensor(cpu_data)
         _CPU_OFFLOAD_BYTES += p.data.numel() * p.data.element_size()
         offloaded_parameters = True
@@ -679,6 +702,7 @@ def maybe_offload_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
                 for k, v in module.state_dict().items()
             }
             output = functional_call(module, device_state, args=args, kwargs=kwargs)
+            # 说明：调用 functional_call 之前恢复 forward 为原始的 forward，调用后重新设置为这里定义的 forward
             module.forward = forward
             return output
 
@@ -687,6 +711,9 @@ def maybe_offload_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
     return module
 
 
+# 已阅
+# 说明：根据 layer_fn 和 pipeline parallelism 的设置，创建一个包含 num_hidden_layers 层的 ModuleList，
+# 在当前 pipeline parallelism 的范围内的层使用 layer_fn 创建，其他层使用 PPMissingLayer 创建
 def make_layers(
     num_hidden_layers: int,
     layer_fn: LayerFn,
@@ -798,6 +825,8 @@ def get_draft_quant_config(
     )
 
 
+# 已阅
+# 说明：num_attn_module 表示每个 Layer 中 attention module 的数量
 def extract_layer_index(layer_name: str, num_attn_module: int = 1) -> int:
     """
     Extract the layer index from the module name.

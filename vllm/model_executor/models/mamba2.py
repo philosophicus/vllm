@@ -47,6 +47,7 @@ KVCache = tuple[torch.Tensor, torch.Tensor]
 class Mamba2DecoderLayer(nn.Module):
     def __init__(
         self,
+        # 说明：默认值见 https://github.com/huggingface/transformers/blob/main/src/transformers/models/mamba2/configuration_mamba2.py
         config: MambaConfig,
         model_config: ModelConfig | None = None,
         cache_config: CacheConfig | None = None,
@@ -56,16 +57,23 @@ class Mamba2DecoderLayer(nn.Module):
         super().__init__()
         self.config = config
         self.mixer = MambaMixer2(
+            # 说明：默认为 4096
             hidden_size=config.hidden_size,
+            # 说明：默认为 128
             ssm_state_size=config.state_size,
+            # 说明：默认为 4
             conv_kernel_size=config.conv_kernel,
             intermediate_size=getattr(
+                # 说明：expand 默认为 2
                 config, "intermediate_size", config.expand * config.hidden_size
             ),
             use_conv_bias=config.use_conv_bias,
             use_bias=config.use_bias,
+            # 说明：默认为 8
             n_groups=config.n_groups,
+            # 说明：默认为 128
             num_heads=config.num_heads,
+            # 说明：默认为 64，num_heads * head_dim = intermediate_size，128 * 64 = 8192 = 2 * 4096
             head_dim=config.head_dim,
             rms_norm_eps=config.layer_norm_epsilon,
             activation=config.hidden_act,

@@ -116,6 +116,7 @@ class EngineCore:
 
         vllm_config.cache_config.num_gpu_blocks = num_gpu_blocks
         vllm_config.cache_config.num_cpu_blocks = num_cpu_blocks
+        # 说明：在 worker 端执行的也是将参数保存在 cache_config 中
         self.collective_rpc("initialize_cache", args=(num_gpu_blocks, num_cpu_blocks))
 
         self.structured_output_manager = StructuredOutputManager(vllm_config)
@@ -130,6 +131,7 @@ class EngineCore:
                 logger.warning("Disabling chunked prefill for model without KVCache")
                 vllm_config.scheduler_config.enable_chunked_prefill = False
 
+        # 说明：一个完整的 scheduler_block_size 要能支持一轮 pcp 和 dcp
         scheduler_block_size = (
             vllm_config.cache_config.block_size
             * vllm_config.parallel_config.decode_context_parallel_size
@@ -229,10 +231,15 @@ class EngineCore:
         start = time.time()
 
         # Get all kv cache needed by the model
+        # 说明：以 GPU 设备为例，executor 通过 collective_rpc 从所有 worker 收集 kv_cache_spec；
+        # worker 通过调用 model_runner 获取 kv_cache_spec；
+        # model_runner 通过从 static forward context 中的每个 Attention 模块
+        # 解析 kv cache 格式来获取 kv_cache_spec (get_kv_cache_spec 方法)
         kv_cache_specs = self.model_executor.get_kv_cache_specs()
 
         has_kv_cache = any(kv_cache_spec for kv_cache_spec in kv_cache_specs)
         if has_kv_cache:
+            # 说明：弹性专家并行扩容
             if os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1":
                 dp_group = getattr(self, "dp_group", None)
                 assert dp_group is not None
@@ -256,6 +263,7 @@ class EngineCore:
         # Track max_model_len before KV cache config to detect auto-fit changes
         max_model_len_before = vllm_config.model_config.max_model_len
 
+        # 说明：所有 worker 的 kv_cache_config 的 num_blocks 是一致的
         kv_cache_configs = get_kv_cache_configs(
             vllm_config, kv_cache_specs, available_gpu_memory
         )
@@ -267,6 +275,7 @@ class EngineCore:
         if max_model_len_after != max_model_len_before:
             self.collective_rpc("update_max_model_len", args=(max_model_len_after,))
 
+        # 说明：生成调度器使用的 kv_cache_config
         scheduler_kv_cache_config = generate_scheduler_kv_cache_config(kv_cache_configs)
         num_gpu_blocks = scheduler_kv_cache_config.num_blocks
         num_cpu_blocks = 0
@@ -1373,6 +1382,7 @@ class DPEngineCoreProc(EngineCoreProc):
                 # Request received for an already-completed wave, notify
                 # front-end that we need to start the next one.
                 self.output_queue.put_nowait(
+                    # -1 表示发给 coordinator
                     (-1, EngineCoreOutputs(start_wave=self.current_wave))
                 )
 

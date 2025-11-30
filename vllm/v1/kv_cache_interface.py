@@ -16,15 +16,21 @@ from vllm.utils.torch_utils import get_dtype_size
 logger = init_logger(__name__)
 
 
+# 已阅
+# 补充：关键点是 "one layer" 的 KV cache 规格
 @dataclass(frozen=True)
 class KVCacheSpec:
     """
     A base class for specifying the KV cache format of one layer.
     """
 
+    # 说明：多数情况值等于 vllm_config.cache_config.block_size，
+    # MambaSpec 中值等于 vllm_config.cache_config.mamba_block_size
     # number of tokens in a block
     block_size: int
 
+    # 说明：没有 num_layers，因为是针对单层的 KV cache 规格；
+    # 对应 block_size 个 token
     @property
     def page_size_bytes(self) -> int:
         """
@@ -35,6 +41,7 @@ class KVCacheSpec:
         """
         raise NotImplementedError
 
+    # 说明：根据 vllm_config.model_config.max_model_len 计算出一个请求可能占用的最大内存，单位是字节
     def max_memory_usage_bytes(self, vllm_config: VllmConfig) -> int:
         """
         The maximum possible memory usage of this KV cache in bytes.
@@ -61,6 +68,7 @@ class KVCacheSpec:
         return copy.deepcopy(specs[0])
 
 
+# 已阅
 @dataclass(frozen=True, kw_only=True)
 class AttentionSpec(KVCacheSpec):
     num_kv_heads: int
@@ -68,6 +76,7 @@ class AttentionSpec(KVCacheSpec):
     dtype: torch.dtype
     page_size_padded: int | None = None
 
+    # 已阅
     @property
     def page_size_bytes(self) -> int:
         real_page_size = self.real_page_size_bytes
@@ -87,6 +96,8 @@ class AttentionSpec(KVCacheSpec):
         )
 
 
+# 已阅
+# 说明：子类包括 MLAAttentionSpec 和 SinkFullAttentionSpec
 @dataclass(frozen=True, kw_only=True)
 class FullAttentionSpec(AttentionSpec):
     """
@@ -100,26 +111,35 @@ class FullAttentionSpec(AttentionSpec):
 
     head_size_v: int = None  # type: ignore[assignment]
 
+    # 说明：用于将 SlidingWindowSpec 转换为 FullAttentionSpec
     sliding_window: int | None = None
     """
     Default to None for not using sliding window attention.
     """
+    # 说明：用于将 ChunkedLocalAttentionSpec 转换为 FullAttentionSpec
     attention_chunk_size: int | None = None
 
     def __post_init__(self):
         if self.head_size_v is None:
             object.__setattr__(self, "head_size_v", self.head_size)
 
+    # 已阅
     def max_memory_usage_bytes(self, vllm_config: VllmConfig) -> int:
         max_model_len = vllm_config.model_config.max_model_len
         dcp_world_size = vllm_config.parallel_config.decode_context_parallel_size
         pcp_world_size = vllm_config.parallel_config.prefill_context_parallel_size
         # Note(hc): each dcp rank only need save
         # (max_model_len//dcp_world_size) tokens locally.
+        # 补充：如果 dcp_world_size * pcp_world_size > 1，则说明 KV cache 在 sequence 维度上被分片了
+        # 两个数相乘是 KV Cache 最终的分片数
         if dcp_world_size * pcp_world_size > 1:
+            # 补充：每个 rank 只需要保存 max_model_len / (dcp_world_size * pcp_world_size) 个 token 的 KV cache
             max_model_len = cdiv(max_model_len, dcp_world_size * pcp_world_size)
+        # 补充：block 个数 * block 大小
         return cdiv(max_model_len, self.block_size) * self.page_size_bytes
 
+    # 已阅
+    # 要求：window_sizes 为空或只有一个值
     @classmethod
     def merge_window_sizes(cls, window_sizes: set[int]) -> int | None:
         if len(window_sizes) == 0:
@@ -132,12 +152,15 @@ class FullAttentionSpec(AttentionSpec):
                 "same window size."
             )
 
+    # 已阅
     @classmethod
     def merge(cls, specs: list[Self]) -> Self:
         """
         Merge a list of FullAttentionSpec objects into a single
         FullAttentionSpec object.
         """
+        # 说明：子类包括 MLAAttentionSpec 和 SinkFullAttentionSpec，
+        # 后面的 assert 禁止包含任何 MLAAttentionSpec
         assert all(isinstance(spec, FullAttentionSpec) for spec in specs), (
             "All attention layers in the same KV cache group must be FullAttentionSpec."
         )
@@ -160,11 +183,14 @@ class FullAttentionSpec(AttentionSpec):
             head_size_v=specs[0].head_size_v,
             dtype=specs[0].dtype,
             page_size_padded=specs[0].page_size_padded,
+            # 说明：同时存在 sliding_window 有值和无值的 spec 时，会合并出一个有值的 spec
             sliding_window=cls.merge_window_sizes(sliding_window),
             attention_chunk_size=cls.merge_window_sizes(attention_chunk_size),
         )
         for spec in specs:
             for f in fields(AttentionSpec):
+                # 说明：确保除了 sliding_window 和 attention_chunk_size 外，
+                # 其他属性都是相同的
                 assert getattr(spec, f.name) == getattr(merged_spec, f.name), (
                     "All attention layers in the same KV cache group must have "
                     "the same attention spec."
@@ -187,6 +213,7 @@ class FullAttentionSpec(AttentionSpec):
         )
 
 
+# 已阅
 @dataclass(frozen=True, kw_only=True)
 class MLAAttentionSpec(FullAttentionSpec):
     # TODO(Lucas/Chen): less hacky way to do this
@@ -218,6 +245,7 @@ class MLAAttentionSpec(FullAttentionSpec):
         return cls(
             block_size=specs[0].block_size,
             num_kv_heads=specs[0].num_kv_heads,
+            # 说明：只有 K 没有 V
             head_size=specs[0].head_size,
             dtype=specs[0].dtype,
             page_size_padded=specs[0].page_size_padded,
@@ -225,6 +253,7 @@ class MLAAttentionSpec(FullAttentionSpec):
         )
 
 
+# 已阅
 @dataclass(frozen=True, kw_only=True)
 class ChunkedLocalAttentionSpec(AttentionSpec):
     attention_chunk_size: int
@@ -244,6 +273,9 @@ class ChunkedLocalAttentionSpec(AttentionSpec):
         return cdiv(num_tokens, self.block_size) * self.page_size_bytes
 
 
+# 已阅
+# 说明：sliding window 可能从一个 block 中的任意 token 位置开始，
+# 关注 max_memory_usage_bytes 在实现时针对这种情况的特殊处理（block 数量要加 1）
 @dataclass(frozen=True, kw_only=True)
 class SlidingWindowSpec(AttentionSpec):
     sliding_window: int
@@ -270,15 +302,23 @@ class SlidingWindowSpec(AttentionSpec):
         return (cdiv(num_tokens, self.block_size) + 1) * self.page_size_bytes
 
 
+# 已阅
 @dataclass(frozen=True)
 class MambaSpec(KVCacheSpec):
     shapes: tuple[tuple[int, ...], ...]
     dtypes: tuple[torch.dtype]
+    # 说明：对应配置 vllm_config.cache_config.mamba_page_size_padded (optional)
+    # 功能为 used by hybrid mamba/attention models to ensure exact alignment with attention page size
     page_size_padded: int | None = None
     mamba_type: str = "mamba2"
+    # 说明：对应配置 vllm_config.cache_config.mamba_cache_mode (none/all/align)
     mamba_cache_mode: str = "none"
+    # 说明：对应配置 vllm_config.speculative_config.num_speculative_tokens，表示预分配的 speculative token 数量
+    # 注意：配置是 token 数量，而 Mamba 中一个 token 占用一个 block，所有这里的属性名称是 block 数量
     num_speculative_blocks: int = 0
 
+    # 说明：Mamba 的 page_size_bytes 是一个 token 所占的内存大小，
+    # 其他 Spec 的 page_size_bytes 都是 block_size 个 token 所占的内存大小
     @property
     def page_size_bytes(self) -> int:
         page_size = sum(
@@ -293,13 +333,18 @@ class MambaSpec(KVCacheSpec):
     def max_memory_usage_bytes(self, vllm_config: VllmConfig) -> int:
         if vllm_config.cache_config.mamba_cache_mode == "all":
             max_model_len = vllm_config.model_config.max_model_len
+            # 说明：只缓存每个 block 最后一个 token 的 conv state 和 ssm state
             return cdiv(max_model_len, self.block_size) * self.page_size_bytes
         elif vllm_config.cache_config.mamba_cache_mode == "align":
+            # 理解：缓存最后一个 block 的最后一个 token (可能是 partial block)，
+            # 并为每轮 decode 最长输出 1 + num_speculative_tokens 个 tokens 分配的内存
             return self.page_size_bytes * (2 + self.num_speculative_blocks)
         else:
+            # 说明：为每轮 decode 最长输出 1 + num_speculative_tokens 个 tokens 分配的内存
             return self.page_size_bytes * (1 + self.num_speculative_blocks)
 
 
+# 已阅
 @dataclass(frozen=True)
 class EncoderOnlyAttentionSpec(AttentionSpec):
     def max_memory_usage_bytes(self, vllm_config: VllmConfig) -> int:
@@ -307,6 +352,7 @@ class EncoderOnlyAttentionSpec(AttentionSpec):
         return 0
 
 
+# 已阅
 @dataclass(frozen=True)
 class CrossAttentionSpec(AttentionSpec):
     """
@@ -320,10 +366,13 @@ class CrossAttentionSpec(AttentionSpec):
         return cdiv(max_encoder_len, self.block_size) * self.page_size_bytes
 
 
+# 已阅
 @dataclass(frozen=True)
 class SinkFullAttentionSpec(FullAttentionSpec):
     sink_len: int | None = None
 
+    # 说明：与 FullAttentionSpec.merge 的区别在于，SinkFullAttentionSpec 还需要检查 sink_len 的一致性，
+    # 其他属性的检查与 FullAttentionSpec.merge 一样
     @classmethod
     def merge(cls, specs: list[Self]) -> Self:
         """
@@ -371,6 +420,9 @@ class SinkFullAttentionSpec(FullAttentionSpec):
         return merged_spec
 
 
+# 已阅
+# 说明：要求所有层的 KV cache 规格的 block_size 都一致；都是同一个类的实例，且特定类的特有属性一致；
+# 但 KVCacheSpec 中的 num_kv_heads，head_size 等属性值不要求一致
 @dataclass(frozen=True)
 class UniformTypeKVCacheSpecs(KVCacheSpec):
     """
@@ -382,6 +434,9 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
 
     kv_cache_specs: dict[str, KVCacheSpec]
 
+    # 已阅
+    # 说明：每种 spec 的 hidden size 可能不一样，将每种 Spec 的 page_size_bytes 求和作为整体的 page_size_bytes，
+    # 相当于所有层变成了一个大层
     @property
     def page_size_bytes(self) -> int:
         return sum(spec.page_size_bytes for spec in self.kv_cache_specs.values())
@@ -393,6 +448,9 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
         )
         return max_num_pages * self.page_size_bytes
 
+    # 已阅
+    # 功能：检查所有层的 KV cache spec 的 block_size 是否都一致；是否是同一个类的实例，
+    # 以及对特定类型 spec 的特定属性值进行一致性检查
     @classmethod
     def is_uniform_type(cls, kv_cache_specs: dict[str, KVCacheSpec]) -> bool:
         """
@@ -435,6 +493,7 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
                 f"Unsupported KV cache spec type: {type(one_spec)}"
             )
 
+    # 已阅
     @classmethod
     def from_specs(cls, kv_cache_specs: dict[str, KVCacheSpec]) -> Self | None:
         """
@@ -448,16 +507,21 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
             return None
 
 
+# 已阅
+# 层级别的 KV cache tensor 规格
 @dataclass
 class KVCacheTensor:
     """
     A class for specifying how the workers should initialize the KV cache.
     """
 
+    # Tensor 总大小
     size: int  # size of the KV cache tensor in bytes
     shared_by: list[str]  # layer names that share the same KV cache tensor
 
 
+# 已阅
+# 多层共享的 KV cache 规格（规格中不包含层数信息）
 @dataclass
 class KVCacheGroupSpec:
     """
@@ -471,14 +535,19 @@ class KVCacheGroupSpec:
     kv_cache_spec: KVCacheSpec
 
 
+# 已阅
 @dataclass
 class KVCacheConfig:
     """
     The KV cache configuration of a model.
     """
 
+    # 说明：KV cache blocks 的数量
+    # 说明：是 block pool 中的 block 数
     num_blocks: int
     """The number of KV cache blocks"""
+    # 说明：对应每一层的 KV cache tensor；
+    # 属于不同 group 但在 group 内同一位置的所有层共享同一个 KV cache tensor
     kv_cache_tensors: list[KVCacheTensor]
     """How should model runner initialize the KV cache tensors for each layer"""
     kv_cache_groups: list[KVCacheGroupSpec]

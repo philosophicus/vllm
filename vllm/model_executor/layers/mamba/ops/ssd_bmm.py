@@ -11,6 +11,10 @@ import torch
 from vllm.triton_utils import tl, triton
 
 
+# 已阅
+# 说明：对 a 和 b 分块之后，计算相同位置两个分块的矩阵乘法；
+# 输入 a 和 b 的 shape 都是 (seqlen, ngroups, k)，a 和 b 分块后变成 (nchunks, ngroups, chunk_size, k)，
+# 输出的 shape 是 (nchunks, ngroups, chunk_size, chunk_size)
 @triton.autotune(
     configs=[
         triton.Config(
@@ -64,13 +68,18 @@ from vllm.triton_utils import tl, triton
 @triton.jit
 def _bmm_chunk_fwd_kernel(
     # Pointers to matrices
+    # 说明：a 的 shape 都是 (seqlen, ngroups, k)
     a_ptr,
+    # 说明：b 的 shape 都是 (seqlen, ngroups, k)
     b_ptr,
+    # 说明：out 的 shape 是 (nchunks, ngroups, chunk_size, chunk_size)，即
+    # (nchunks, ngroups, M, N)，其中 M 和 N 都是 chunk_size 维度，这也说明了为什么叫 bmm
     out_ptr,
     cu_chunk_seqlens_ptr,
     # Matrix dimensions
     seqlen,
     chunk_size: tl.constexpr,
+    # 说明：k 是 a 和 b 的最后一个维度的大小，等于 dstate
     K: tl.constexpr,
     ngroups: tl.constexpr,
     stride_a_seqlen: tl.int64,
@@ -90,13 +99,20 @@ def _bmm_chunk_fwd_kernel(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
 ):
+    # 说明：一个 block 处理一个 chunk 和一个 group 的 BLOCK_SIZE_M x BLOCK_SIZE_N 维度的矩阵乘积，
+    # BLOCK_SIZE_M 和 BLOCK_SIZE_N 都是 chunk_size 维度
+    # 说明：pid_ch 是 chunk 和 group 维度的组合索引
     pid_ch = tl.program_id(axis=1).to(tl.int64)
+    # 说明：pid_c 是 chunk 维度的索引，pid_h 是 group 维度的索引
     pid_c = pid_ch // ngroups
     pid_h = pid_ch - pid_c * ngroups
     num_pid_n = tl.cdiv(chunk_size, BLOCK_SIZE_N)
+    # 说明：M 维度的 chunk 索引
     pid_m = tl.program_id(axis=0) // num_pid_n
+    # 说明：N 维度的 chunk 索引
     pid_n = tl.program_id(axis=0) % num_pid_n
     if IS_CAUSAL:
+        # 说明：根据左下角判断 block 是否完全在上三角，如果在则直接返回
         if pid_n * BLOCK_SIZE_N >= (pid_m + 1) * BLOCK_SIZE_M:
             return
 
@@ -146,6 +162,10 @@ def _bmm_chunk_fwd_kernel(
     )
 
 
+# 已阅
+# 说明：对 a 和 b 分块之后，计算相同位置两个分块的矩阵乘法；
+# 输入 a 和 b 的 shape 都是 (seqlen, ngroups, k)，a 和 b 分块后变成 (nchunks, ngroups, chunk_size, k)，
+# 输出的 shape 是 (nchunks, ngroups, chunk_size, chunk_size)
 def _bmm_chunk_fwd(a, b, chunk_size, cu_chunk_seqlens, causal=False, output_dtype=None):
     """
     Argument:

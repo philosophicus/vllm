@@ -79,6 +79,8 @@ CopyBlocksOp = Callable[
 logger = init_logger(__name__)
 
 
+# 已阅
+# 说明：关注 VllmConfig 中的 "turn HMA off for connector unless specifically enabled" 相关注释
 class SupportsHMA(ABC):
     """
     The class that indicates the corresponding connector supports hybrid memory
@@ -111,6 +113,7 @@ class SupportsHMA(ABC):
         raise NotImplementedError
 
 
+# 已阅
 def supports_hma(connector: Any) -> bool:
     if isinstance(connector, type):
         return issubclass(connector, SupportsHMA)
@@ -144,6 +147,8 @@ class KVConnectorMetadata(ABC):  # noqa: B024
     pass
 
 
+# 待看
+# 说明：用于在 vLLM 实例之间传输 KV cache 的连接器基类，包含 Scheduler 端和 Worker 端的接口定义
 class KVConnectorBase_V1(ABC):
     """
     Base class for KV connectors.
@@ -167,8 +172,12 @@ class KVConnectorBase_V1(ABC):
             "Initializing KVConnectorBase_V1. This API is experimental and "
             "subject to change in the future as we iterate the design."
         )
+        # 说明：需要在 Scheduler KVConnector 和 Worker KVConnector 之间传递的元数据
         self._connector_metadata: KVConnectorMetadata | None = None
         self._vllm_config = vllm_config
+        # 说明：目前在 VllmConfig 中，如果设置了 kv_offloading_backend，
+        # 会通过创建默认 kv_transfer_config 的方式确保 kv_transfer_config 不为 None
+        # 具体见 _post_init_kv_transfer_config
         if vllm_config.kv_transfer_config is not None:
             self._kv_transfer_config = vllm_config.kv_transfer_config
         else:
@@ -191,6 +200,7 @@ class KVConnectorBase_V1(ABC):
     # Worker-side methods
     # ==============================
 
+    # 说明：绑定来自调度器的连接器元数据，每次模型执行前由模型运行器调用
     def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
         """Set the connector metadata from the scheduler.
 
@@ -203,6 +213,7 @@ class KVConnectorBase_V1(ABC):
         """
         self._connector_metadata = connector_metadata
 
+    # 说明：清除连接器元数据，每次模型执行后由模型运行器调用
     def clear_connector_metadata(self) -> None:
         """Clear the connector metadata.
 

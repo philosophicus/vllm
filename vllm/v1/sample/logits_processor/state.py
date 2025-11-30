@@ -15,6 +15,8 @@ if TYPE_CHECKING:
     from vllm.v1.sample.logits_processor.interface import LogitsProcessor
 
 
+# 已阅
+# 根据缓存的 Batch 的状态变更（persistent batch state changes），构建 BatchUpdate 对象
 class BatchUpdateBuilder:
     """Helps track persistent batch state changes and build
     a batch update data structure for logitsprocs
@@ -56,6 +58,7 @@ class BatchUpdateBuilder:
         # where we don't populate the added list.
         self.batch_changed = False
 
+    # 已阅
     def _ensure_removed_sorted(self) -> None:
         """Sort removed request indices in
         descending order.
@@ -73,6 +76,13 @@ class BatchUpdateBuilder:
         self._ensure_removed_sorted()
         return self._removed
 
+    # 设计：
+    # All information about requests removed from persistent batch
+    # during a step is aggregated in self._removed through calls to
+    # self.removed_append() at the beginning of a step. This must happen
+    # before the first time that self.removed, self.pop_removed()
+    # or self.peek_removed() are invoked in a given step
+    # 理解：还没有整理好 removed 列表，当然不能访问
     def removed_append(self, index: int) -> None:
         """Register the removal of a request from the persistent batch.
 
@@ -99,6 +109,8 @@ class BatchUpdateBuilder:
             return self._removed[-1]
         return None
 
+    # 已阅
+    # 说明：降序排列，弹出已删除的最小的请求索引（注意是 index 不是 id）
     def pop_removed(self) -> int | None:
         """Pop lowest removed request index"""
         if self.has_removed():
@@ -145,6 +157,8 @@ class BatchUpdateBuilder:
         return batch_update
 
 
+# 已阅
+# 根据 LogitsProcessor 是否在贪婪采样中对 argmax 计算有影响，将其分组存储，并支持返回合并后的分组
 class LogitsProcessors:
     """Encapsulates initialized logitsproc objects."""
 

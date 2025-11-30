@@ -21,6 +21,7 @@ class StructuredOutputRequest:
     _grammar: Future[StructuredOutputGrammar] | StructuredOutputGrammar | None = None
     reasoning_ended: bool | None = None
 
+    # 已阅
     @staticmethod
     def from_sampling_params(
         sampling_params: SamplingParams | None,

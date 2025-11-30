@@ -12,6 +12,11 @@ from vllm.triton_utils import tl, triton
 from vllm.v1.attention.backends.utils import PAD_SLOT_ID
 
 
+# 已阅
+# 说明：实现了带状态缓存的因果卷积前向传播计算
+# 1. 根据 state_len, seqlen, pre 等参数，更新 initial conv_state；或者将 x 写入 output cache，
+# 即根据 block_idx_first_scheduled_token 和 block_idx_last_scheduled_token 获取的 cache line；
+# 2. 计算 x 与 w 的卷积结果，写入 o；
 @triton.jit()
 def _causal_conv1d_fwd_kernel(  # continuous batching
     # Pointers to matrices
@@ -46,6 +51,7 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
     stride_cache_indices: tl.constexpr,
     stride_o_dim: tl.constexpr,
     stride_o_token: tl.constexpr,
+    # 说明：block_size_to_align // BLOCK_M
     stride_block_m: tl.constexpr,  # Stride block to align divided by BLOCK_M
     # others
     pad_slot_id: tl.constexpr,
@@ -72,7 +78,9 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
     # rather than mixing sequences - to make updating initial_states across sequences efficiently
 
     # single-sequence id
+    # 说明：[0, 0, 1, 1, 1, 1, 2, 2]
     idx_seq = tl.load(batch_ptr + tl.program_id(0)).to(tl.int64)
+    # 说明：[0, 1, 0, 1, 2, 3, 0, 1]
     chunk_offset = tl.load(token_chunk_offset_ptr + tl.program_id(0))
 
     # BLOCK_N elements along the feature-dimension (channel)
@@ -86,12 +94,14 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
     # find the actual sequence length
     seqlen = sequence_end_index - sequence_start_index
 
+    # 说明：即 block_size_to_align，缓存分块的 token 数量
     B_size: tl.constexpr = stride_block_m * BLOCK_M
 
     if IS_APC_ENABLED:
         # Handle the case if prefix caching is enabled.
         # In particular, if prefix caching is enabled, the program write additional cache states to "cache_indices_ptr"
 
+        # 说明：需要填充的第一个和最后一个 cache block 的 index
         # Get the length of the completed sequence so far and compute the offset.
         current_first_index = tl.load(block_idx_first_scheduled_token + idx_seq)
         current_last_index = tl.load(block_idx_last_scheduled_token + idx_seq)
@@ -100,11 +110,22 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
         # Compute the offset where the first stride_block_m-aligned first full block is
         # Value in "token-space"
         sequence_completed_offset_token = sequence_completed_index % B_size
+        # 说明：block 内在 computed_tokens 之后的剩余的 token 空间
         seq_completed_offset = B_size - sequence_completed_offset_token
+        # 说明：填充 seq_completed_offset 后，剩余的 seqlen - seq_completed_offset 个 token 刨除完整 block 后还剩多少 token
+        # 说明：B_size = 8, sequence_completed_offset_token = 2，seq_completed_offset = 6
+        # 如果 seqlen = 10, seq_end_offset = 4，表示在最后一个 block 里有多少个 token；
+        # 如果 seqlen = 2，seq_end_offset = -4 % 8 = 4，这种情况是有问题的，因为 seq_end_offset 已经大于了 seqlen，
+        # 此时 sequence_end_index - seq_end_offset 会跳过整个序列
         seq_end_offset = (seqlen - seq_completed_offset) % B_size
+        # 说明：last_full_block_token_index = sequence_end_index - 4，
+        # 表示最后一个 block 的起始 token 在 sequence 中的索引位置
         last_full_block_token_index = sequence_end_index - seq_end_offset
         # If the sequence without the sequence_offset_index is stride_cache_chunk-aligned, then the last full chunk is the second-to-last one
         if seq_end_offset == 0:
+            # 说明：此时 last_full_block_token_index == sequence_end_index；
+            # 问题：last_full_block_token_index - B_size 能保证在序列范围内吗？
+            # 是负数没有关系，后面会通过 mask 来控制
             last_full_block_token_index = last_full_block_token_index - B_size
 
         # Get the number of blocks to be filled for the current sequence
@@ -123,11 +144,15 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
     token_offset = BLOCK_M * chunk_offset
     segment_len = min(BLOCK_M, seqlen - token_offset)
 
+    # 说明：再加上序列内 token_offset * stride_x_token 即可定位到具体 token
     # base of the sequence
     x_base = (
         x_ptr + sequence_start_index * stride_x_token + idx_feats * stride_x_dim
     )  # [BLOCK_N,]
 
+    # 说明：(batch, n_blocks + padding) The second dimension contains
+    # the block indices relevant for each sequence
+    # plus potential 0-padding at the beginning and at the end
     # cache_idx
     conv_states_input_coord = tl.load(
         conv_state_indices_ptr + idx_seq * stride_cache_indices + conv_state_init_index
@@ -152,15 +177,19 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
         # read from conv_states
         load_init_state = tl.load(has_initial_states_ptr + idx_seq).to(tl.int1)
         if load_init_state:
+            # 说明：长度为 state_len，这里是读取 conv state 的最后一个 token
             # load from conv_states
             prior_tokens = conv_states_base + (state_len - 1) * stride_conv_state_tok
             mask_w = idx_feats < dim
             if KERNEL_WIDTH == 2:
+                # 说明：conv state 的最后一个 token 
                 conv_states_ptrs = prior_tokens  # [BLOCK_N]
                 col0 = tl.load(conv_states_ptrs, mask_w, 0.0)
             if KERNEL_WIDTH == 3:
+                # 说明：conv state 的最后一个 token 
                 conv_states_ptrs = prior_tokens  # [BLOCK_N]
                 col1 = tl.load(conv_states_ptrs, mask_w, 0.0)
+                # 说明：conv state 的倒数第二个 token 
                 conv_states_ptrs = prior_tokens - 1 * stride_conv_state_tok  # [BLOCK_N]
                 col0 = tl.load(conv_states_ptrs, mask_w, 0.0)
             if KERNEL_WIDTH == 4:
@@ -199,6 +228,9 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
             # just read from 'x'
             # copy 'x' data to conv_state
             # load only 'x' data (and set 0 before 'x' if seqlen < state_len)
+            # 说明：seqlen >= state_len，作为 chunk 0，将 x 尾部的 state_len 个 token 的数据写入 conv_state（需要填充的最后一个 block），
+            # 但 initial conv_state 没有被更新；如果有其他 chunk，那么其他分块会负责填充从 current_first_index 开始的 block；
+            # current_first_index 有可能和 initial conv_state 对应的 block 相同，也有可能是 initial conv_state 之后的 block；
             idx_tokens_last = (seqlen - state_len) + tl.arange(
                 0, NP2_STATELEN
             )  # [BLOCK_M]
@@ -213,15 +245,21 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
                 & (idx_feats < dim)[None, :]
             )  # token-index  # token-index  # feature-index
             loaded_x = tl.load(x_ptrs, mask_x, 0.0)
+            # 说明：用于计算写入 conv_state 的位置的 index，说明最后一个 block 是从头写入的，
+            # block 的长度至少为 state_len；如果是 state_len 则表示正好写满一个 block
+            # 调研：block 的长度是否正好是 state_len？
             idx_tokens_conv = tl.arange(0, NP2_STATELEN)  # [BLOCK_M]
 
+            # 说明：conv_state_indices[idx_seq, current_last_index]
             # Compute the offset where the last block should be written in the conv_states
             conv_states_output_coord = tl.load(
                 conv_state_indices_ptr
                 + idx_seq * stride_cache_indices
+                # 说明：需要填充的最后一个 block 的 index
                 + current_last_index
             ).to(tl.int64)
 
+            # 说明：conv_states[conv_states_output_coord, idx_feats, idx_tokens_conv]
             conv_states_ptrs_target = (
                 conv_states_ptr
                 + (conv_states_output_coord * stride_conv_state_seq)  # Offset from seq
@@ -232,21 +270,28 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
 
             mask = (idx_tokens_conv < state_len)[:, None] & (idx_feats < dim)[None, :]
             tl.debug_barrier()  #  NOTE: use this due to bug in Triton compiler
+            # 说明：写到需要填充的最后一个 block 的 conv_state 中
             tl.store(conv_states_ptrs_target, loaded_x, mask)
 
         else:
+            # 说明：state_len > seqlen，需要左移 conv_state，移动长度为 seqlen，然后将 x 的数据写入 initial conv_state 的尾部；
+            # 理解：默认情况 state_len = 3，所以此时应该只有一个 chunk（因为 chunk_size = 8）；
+            # 理论上这种情况也有可能有多个 block 需要更新，但这里选择了直接更新 initial conv_state；
             if load_init_state:
                 # update conv_state by shifting left, i.e. take last few cols from conv_state + cols from 'x'
                 idx_tokens_conv = tl.arange(0, NP2_STATELEN)  # [BLOCK_M]
 
+                # 说明：读取 conv_state 结尾处的 state_len - seqlen 个 token
                 conv_states_ptrs_source = (
                     conv_states_ptr
                     + (conv_states_input_coord * stride_conv_state_seq)
                     + (idx_feats * stride_conv_state_dim)[None, :]
+                    # 说明：根据下面 mask 确定的 idx_tokens_conv 范围，得到 conv_states 取值的范围是 [seqlen, state_len) 
                     + ((idx_tokens_conv + seqlen) * stride_conv_state_tok)[:, None]
                 )  # [BLOCK_M, BLOCK_N]
                 mask = (
                     (conv_states_input_coord < num_cache_lines)
+                    # 说明：idx_tokens_conv 的范围是 [0, state_len - seqlen)
                     & ((idx_tokens_conv + seqlen) < state_len)[:, None]
                     & (idx_feats < dim)[None, :]
                 )
@@ -256,20 +301,25 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
 
                 x_ptrs = (
                     x_base[None, :]
+                    # 说明：根据下面 mask_x 确定的 idx_tokens_conv 范围，得到 x 取值的范围是 [0, seqlen)
                     + ((idx_tokens_conv - VAL) * stride_x_token)[:, None]
                 )  # [BLOCK_M, BLOCK_N]
 
                 mask_x = (
                     (idx_tokens_conv - VAL >= 0)[:, None]
+                    # 说明：idx_tokens_conv 的取值范围是 [state_len - seqlen, state_len)
                     & (idx_tokens_conv - VAL < seqlen)[:, None]
                     & (idx_feats < dim)[None, :]
                 )  # token-index  # token-index  # feature-index
                 loaded_x = tl.load(x_ptrs, mask_x, 0.0)
 
                 tl.debug_barrier()  # need this due to the bug in tl.where not enforcing this when data is the result of another tl.load
+                # 说明：将 conv_state 最后的 state_len - seqlen 个 token 数据 + x 的前 seqlen 个 token 数据组成新的 conv_state，
+                # 长度为 state_len
                 new_conv_state = tl.where(
                     mask, conv_state, loaded_x
                 )  # BUG in 'tl.where'  which requires a barrier before this
+                # 说明：conv_states[conv_states_input_coord, idx_feats, idx_tokens_conv]
                 conv_states_ptrs_target = (
                     conv_states_base
                     + (idx_tokens_conv * stride_conv_state_tok)[:, None]
@@ -277,6 +327,7 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
                 mask = (idx_tokens_conv < state_len)[:, None] & (idx_feats < dim)[
                     None, :
                 ]
+                # 说明：写回到 initial conv_state 位置
                 tl.store(conv_states_ptrs_target, new_conv_state, mask)
             else:  # load_init_state == False
                 # update conv_state by shifting left, BUT
@@ -287,10 +338,12 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
 
                 x_ptrs = (
                     x_base[None, :]
+                    # 说明：根据下面 mask_x 确定的 idx_tokens_conv 范围，得到 x 取值的范围是 [0, seqlen)
                     + ((idx_tokens_conv - VAL) * stride_x_token)[:, None]
                 )  # [BLOCK_M, BLOCK_N]
 
                 mask_x = (
+                    # 说明：idx_tokens_conv 的取值范围是 [state_len - seqlen, state_len)
                     (idx_tokens_conv - VAL >= 0)[:, None]
                     & (idx_tokens_conv - VAL < seqlen)[:, None]
                     & (idx_feats < dim)[None, :]
@@ -304,19 +357,31 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
                 mask = (idx_tokens_conv < state_len)[:, None] & (idx_feats < dim)[
                     None, :
                 ]
+                # 说明：写回到 initial conv_state 位置，前面 state_len - seqlen 个 token 数据为 0，
+                # 后面 seqlen 个 token 数据为 x 的数据
                 tl.store(conv_states_ptrs_target, new_conv_state, mask)
 
     else:  # chunk_offset > 0
         # read prior-token data from `x`
         load_init_state = True
+        # 说明：chunk_offset > 0，一定有 prior token，从 x 中读取
         prior_tokens = x_base + (token_offset - 1) * stride_x_token
         mask_w = idx_feats < dim
         if KERNEL_WIDTH == 2:
             conv_states_ptrs = prior_tokens  # [BLOCK_N]
+            # 说明：x 里前面 1 个位置的 token
+            # 说明：https://triton-lang.org/main/python-api/generated/triton.language.load.html
+            # cache_modifier (str, optional, should be one of {“”, “.ca”, “.cg”, “.cv”}, 
+            # where “.ca” stands for cache at all levels, 
+            # “.cg” stands for cache at global level (cache in L2 and below, not L1), 
+            # and “.cv” means don’t cache and fetch again.
+            # 同时参见 https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#cache-operators
             col0 = tl.load(conv_states_ptrs, mask_w, 0.0, cache_modifier=".ca")
         if KERNEL_WIDTH == 3:
+            # 说明：x 里前面 1 个位置的 token
             conv_states_ptrs = prior_tokens  # [BLOCK_N]
             col1 = tl.load(conv_states_ptrs, mask_w, 0.0, cache_modifier=".ca")
+            # 说明：x 里前面 2 个位置的 token
             conv_states_ptrs = prior_tokens - 1 * stride_x_token  # [BLOCK_N]
             col0 = tl.load(conv_states_ptrs, mask_w, 0.0, cache_modifier=".ca")
         if KERNEL_WIDTH == 4:
@@ -344,11 +409,25 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
         # If n_block_to_fill > 0, then the states at the sequence end and at the n_block_to_fill-last
         # stride_block_m are cached.
         # For example chunk_offset = n_block_to_fill stores the state at last_full_block
+        # 说明：对于 Mamba，n_block_to_fill 对应的 block 大小就是 B_size，即 mamba_block_size（见 _compute_prefix_caching_block_indices）
+        # 翻译：n_block_to_fill > 0 时，最后 n_block_to_fill 个 B_size = stride_block_m * BLOCK_M 的 token 会被缓存
+        # 说明：chunk_offset 的范围是 [1, n_block_to_fill]（从前面开始缓存），最后用于缓存状态的目标 block 的索引范围是
+        # [current_first_index, current_first_index + n_block_to_fill - 1]
         if (chunk_offset - 1) < n_block_to_fill:
+            # 说明：chunk 的大小为 BLOCK_M = 8；
+            # block 的大小为 B_size = block_size_to_align = stride_block_m * BLOCK_M，表示缓存分块的 token 数量；
+            # 说明：idx_tokens_last 表示不包含最后一个 block，从 current_first_index 开始共 n_block_to_fill 个 block，
+            # 每个 block 最后 state_len 个 token 的起始位置的索引；
             # Store the states at the chunk boundaries from the start of the sequence
             idx_tokens_last = (
+                # 说明：最后一个 block 的起始 token 在 x 中的索引位置
                 last_full_block_token_index
+                # 说明：因为 last_full_block_token_index 是根据 B_size 对齐计算的，所以每个 block 的起始位置应相差 B_size 个 token；
+                # 说明：因为 chunk_size <= block_size_to_align，相同长度的序列 chunk 数量一定 >= block 数量，
+                # 所以 n_block_to_fill - chunk_offset 的最大范围是 [0, n_block_to_fill - 1]；
                 - (n_block_to_fill - chunk_offset) * B_size
+                # 说明：state_len 是 conv_state 里需要存储的 token 数量，值为 KERNEL_WIDTH - 1，一般 KERNEL_WIDTH 默认为 4，
+                # 此时 state_len = 3
                 - state_len
             ) + tl.arange(0, NP2_STATELEN)  # [BLOCK_M]
             x_ptrs = (
@@ -357,12 +436,19 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
                 + (idx_feats * stride_x_dim)[None, :]
             )  # [BLOCK_M,BLOCK_N,]
 
+            # 理解：n_block_to_fill 隐含了序列的长度情况，在这种情况下计算出的 idx_tokens_last 的范围一定不会越界读取其他序列的 x；
+            # 理解：idx_tokens_last 可能为负，此时加载的 x 都为 0
+            # 问题：即使 idx_tokens_last 为正，怎么保证不会越界读取其他序列的 x？
+            # 有 bug ？idx_tokens_last 应该 >= sequence_start_index 吧？
+            # 理解：n_block_to_fill 可能是根据序列长度计算得到的，也就是说一定不会越界读取其他序列的 x ？
             mask_x = (idx_tokens_last >= 0)[:, None] & (idx_feats < dim)[
                 None, :
             ]  # token-index  # token-index  # feature-index
             loaded_x = tl.load(x_ptrs, mask_x, 0.0)
             idx_tokens_conv = tl.arange(0, NP2_STATELEN)  # [BLOCK_M]
 
+            # 说明：conv_state_indices[idx_seq, current_first_index + (chunk_offset - 1)]
+            # chunk_offset <= n_block_to_fill，所以最多只能填充到 current_last_index - 1 对应的 block；
             # cache_idx
             conv_states_output_coord = tl.load(
                 conv_state_indices_ptr
@@ -465,12 +551,16 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
         tl.store(o_ptrs, acc, mask=mask_1d)
 
 
+# 已阅
+# 说明：用于 prefill
 def causal_conv1d_fn(
     x: torch.Tensor,
+    # 说明：shape 为 [intermediate_size, conv_kernel_size]
     weight: torch.Tensor,
     bias: torch.Tensor | None,
     conv_states: torch.Tensor,
     query_start_loc: torch.Tensor,
+    # 说明：每个请求对应一组 block indices，用于指定每个请求的 conv state 在 cache 中的位置
     cache_indices: torch.Tensor | None = None,
     has_initial_state: torch.Tensor | None = None,
     activation: str | None = "silu",
@@ -479,6 +569,7 @@ def causal_conv1d_fn(
     block_idx_last_scheduled_token: torch.Tensor | None = None,
     initial_state_idx: torch.Tensor | None = None,
     num_computed_tokens: torch.Tensor | None = None,
+    # 说明：传入的参数可能是的 mamba_block_size
     block_size_to_align=0,
     metadata=None,
     validate_data=False,
@@ -543,9 +634,12 @@ def causal_conv1d_fn(
     x = x.to(conv_states.dtype)
     out = torch.empty_like(x)
     if metadata is not None:
+        # 说明：nums_dict 的计算逻辑见 compute_causal_conv1d_metadata
         nums_dict = metadata.nums_dict
         args = nums_dict
+        # 说明：例子为 [0, 0, 1, 1, 1, 1, 2, 2]
         batch_ptr = metadata.batch_ptr
+        # 说明：例子为 [0, 1, 0, 1, 2, 3, 0, 1]
         token_chunk_offset_ptr = metadata.token_chunk_offset_ptr
     else:
         seqlens = query_start_loc.diff().to("cpu")
@@ -559,12 +653,15 @@ def causal_conv1d_fn(
             (MAX_NUM_PROGRAMS,), PAD_SLOT_ID, dtype=torch.int32, device=x.device
         )  # tracking BLOCK_M-based index in the sequence the Triton program is handling
 
+    # 说明：(dim, cu_seq_len)，需要确保 cu_seq_len 在最后
     is_channel_last = (x.stride(0) == 1) & (x.stride(1) > 1)
     dim, cu_seqlen = x.shape
+    # 说明：(dim, width)
     _, width = weight.shape
     state_len = width - 1
     np2_statelen = triton.next_power_of_2(state_len)
 
+    # 说明：batch_size
     padded_batch = query_start_loc.size(0) - 1
     stride_x_dim = x.stride(0)
     stride_x_token = x.stride(1)
@@ -574,6 +671,8 @@ def causal_conv1d_fn(
     stride_istate_dim = 0
     stride_istate_token = 0
     num_cache_lines = 0
+    # 说明：固定的 BLOCK_M，在 compute_causal_conv1d_metadata 中的 BLOCK_M 目前也只有 8；
+    # 表示一个 block/kernel 处理一个序列中的 8 个 token
     BLOCK_M = 8
     if conv_states is not None:
         # extensions to support vLLM:
@@ -590,11 +689,16 @@ def causal_conv1d_fn(
         stride_istate_seq = conv_states.stride(0)
         stride_istate_dim = conv_states.stride(1)
         stride_istate_token = conv_states.stride(2)
+        # 说明：dim 维度连续
         assert stride_istate_dim == 1
+    # 说明：dim() 是方法，ndim 是属性
     if out.dim() == 2:
         stride_o_dim = out.stride(0)
         stride_o_token = out.stride(1)
     else:
+        # 理解：此时的 shape 应该是 (batch, dim, seqlen)，参考 causal_conv1d_update 中的 x 和 out 形状
+        # 在 validate_data=True 时，assert x.dim() == 2 已经限定了 x 和 out 是 2D 的了，
+        # 所以这里是无效的分支
         stride_o_dim = out.stride(1)
         stride_o_token = out.stride(2)
     stride_cache_indices = cache_indices.stride(0) if cache_indices is not None else 0
@@ -615,6 +719,7 @@ def causal_conv1d_fn(
             assert conv_states is not None, (
                 "ERROR: `has_initial_state` is used, which needs also `conv_states`"
             )
+        # 说明：width 维度连续
         assert weight.stride(1) == 1
         assert (dim, width) == weight.shape
         assert is_channel_last, "Need to run in channel-last layout"
@@ -627,6 +732,7 @@ def causal_conv1d_fn(
 
     if metadata is None:
 
+        # 说明：逻辑可以对照 compute_causal_conv1d_metadata 来看
         def num_program(META, seqlens):
             tot = 0
 
@@ -671,6 +777,7 @@ def causal_conv1d_fn(
             offsetlist = nums_dict[META["BLOCK_M"]]["offsetlist"]
 
             if nums_dict[META["BLOCK_M"]]["batch_ptr"] is not None:
+                # 说明：使用 metadata 里预先计算好的结果，避免重复计算
                 META["batch_ptr"] = nums_dict[META["BLOCK_M"]]["batch_ptr"]
                 META["token_chunk_offset_ptr"] = nums_dict[META["BLOCK_M"]][
                     "token_chunk_offset_ptr"
@@ -745,13 +852,20 @@ def causal_conv1d_fn(
     return out.to(original_x_dtype)
 
 
+# 已阅
+# 说明：因果一维卷积状态增量更新算子
+# 1. 根据 num_accepted_tokens，对 conv state 进行滑动窗口处理，并添加 x 到 conv state 末尾；
+# 2. 计算 x 与 w 的卷积结果，写入 o；
+# 说明：处理一个序列的 BLOCK_N 个维度
 @triton.jit()
 def _causal_conv1d_update_kernel(
     # Pointers to matrices
     x_ptr,  # (batch, dim, seqlen)
     w_ptr,  # (dim, width)
     bias_ptr,
+    # 说明： (num_cache_lines, dim, state_len)
     conv_state_ptr,
+    # 说明： w/o APC (batch, ) 或  w/ APC (batch, max_positions)，参见 selective_scan_fn
     conv_state_indices_ptr,
     num_accepted_tokens_ptr,
     query_start_loc_ptr,  # (batch + 1)
@@ -795,6 +909,7 @@ def _causal_conv1d_update_kernel(
     if idx_seq >= batch:
         return
 
+    # 说明：dim 维度
     # [BLOCK_N,] elements along the feature-dimension (channel)
     idx_feats = tl.program_id(1) * BLOCK_N + tl.arange(0, BLOCK_N)
 
@@ -806,6 +921,8 @@ def _causal_conv1d_update_kernel(
         conv_state_init = 0
         current_last_index = 0
 
+    # 说明：conv_state_indices_ptr 的 shape 为 (batch, ) 或 (batch, max_positions)，
+    # 读取的是 conv_state 的 coord，即第几个 cache_line
     # cache_idx
     conv_states_input_coord = tl.load(
         conv_state_indices_ptr + idx_seq * stride_state_indices + conv_state_init
@@ -819,9 +936,13 @@ def _causal_conv1d_update_kernel(
     if IS_VARLEN:
         query_start_index = tl.load(query_start_loc_ptr + idx_seq).to(tl.int64)
         query_end_index = tl.load(query_start_loc_ptr + (idx_seq + 1)).to(tl.int64)
+        # 说明：state_len 等于 width - 1 或者 width - 1 + (seqlen - 1)；
+        # 原来的 seqlen 是 max_query_len，现在改为实际的序列长度
+        # 说明：state_len 减去 (seqlen - actual_seqlen)，即减去本来不存在的 padding 部分
         # revise state_len and seqlen
         state_len = state_len - (seqlen - (query_end_index - query_start_index))
         seqlen = query_end_index - query_start_index
+        # 说明：IS_VARLEN, x 的 shape 是 [num_tokens, dim]，所以 offset 要乘以 stride_x_token
         x_offset = query_start_index * stride_x_token
         o_offset = query_start_index * stride_o_token
     else:
@@ -834,6 +955,13 @@ def _causal_conv1d_update_kernel(
         return
 
     if IS_SPEC_DECODING:
+        # 说明：注意，这里的 offset 是 num_accepted_tokens - 1，
+        # 参考本段后续的注释，可以这样理解：
+        # 1. 在 [history1, history2, ..., historyM] 后面拼接 num_accepted_tokens 个 token，
+        #    此时读取位置也应该向后偏移，即从 0 变为 num_accepted_tokens；
+        # 2. conv_state 会发生 shift，更新后的 conv_state 是 [history2, ..., historyM] + [num_accepted_tokens 个 token]，
+        #    即 history1 被丢弃，所以读取位置应该向前移动 1，即 num_accepted_tokens - 1 个 token；
+        # 调研/问题：第 2 步的 shift 1 具体是在哪里发生的？
         # The rolling of conv state:
         #
         # Before forward, the conv_state is:
@@ -851,18 +979,24 @@ def _causal_conv1d_update_kernel(
             tl.load(num_accepted_tokens_ptr + idx_seq).to(tl.int64) - 1
         )
     else:
+        # 说明：此时的 state_len = width - 1
         conv_state_token_offset = 0
 
     # STEP 1: READ init_state data
     conv_states_base = (
         conv_state_ptr
+        # 说明：last computed token 对应的 block index
         + (conv_states_input_coord * stride_conv_state_seq)
         + (idx_feats * stride_conv_state_dim)
     )
     mask_w = idx_feats < dim
 
     prior_tokens = conv_states_base + conv_state_token_offset * stride_conv_state_tok
+    # 说明：KERNEL_WIDTH 的值是权重的 width，表示卷积核的宽度；
+    # 理解：对于第一个 token，卷积核前 KERNEL_WIDTH - 1 个位置对应的输入存储在 conv_state 窗口的前 KERNEL_WIDTH - 1 个位置，
+    # 第 KERNEL_WIDTH 个位置对应当前输入 token；之后，随着每个新 token 的输入，conv_state 里的对应位置会滑动更新；
     if KERNEL_WIDTH >= 2:
+        # 说明：卷积核宽度至少为 2 时，加载 offset 为 0 或 num_accepted_tokens - 1 位置的 token
         conv_states_ptrs = prior_tokens  # [BLOCK_N]
         col0 = tl.load(conv_states_ptrs, mask_w, 0.0)
     if KERNEL_WIDTH >= 3:
@@ -889,12 +1023,18 @@ def _causal_conv1d_update_kernel(
         + (conv_states_input_coord * stride_conv_state_seq)
         + conv_state_token_offset * stride_conv_state_tok
         + (idx_feats * stride_conv_state_dim)[None, :]
+        # 说明：关注这里
+        # speculative decoding 时的偏移为 1，conv_state_token_offset + idx_tokens + 1 的范围是 [num_accepted_tokens, ...]
+        # 非 speculative decoding 时偏移为 seqlen，conv_state_token_offset + idx_tokens + seqlen 的范围是 [seqlen, ...]
         + ((idx_tokens + (1 if IS_SPEC_DECODING else seqlen)) * stride_conv_state_tok)[
             :, None
         ]
     )  # [BLOCK_M, BLOCK_N]
     mask = (
         (conv_states_input_coord < num_cache_lines)
+        # 说明：idx_tokens + seqlen < state_len，是为了给 x 留出 seqlen 长度的位置；
+        # 从上面的起始位置开始，读取 state_len - seqlen 个 token 的 conv_state 数据，
+        # 问题：剩余的 seqlen 个位置由 x 来填充？
         & ((idx_tokens + seqlen) < state_len)[:, None]
         & (idx_feats < dim)[None, :]
     )
@@ -903,20 +1043,44 @@ def _causal_conv1d_update_kernel(
     VAL = state_len - seqlen
     x_base = x_ptr + x_offset + (idx_feats * stride_x_dim)  # [BLOCK_N]
 
+    # 说明：NP2_STATELEN >= state_len >= seqlen，所以 idx_tokens - VAL 的最大值 >= seqlen
     x_ptrs = (
         x_base[None, :] + ((idx_tokens - VAL) * stride_x_token)[:, None]
     )  # [BLOCK_M, BLOCK_N]
 
+    # 说明：从 x 中从头开始最长加载 seq_len 长度的数据
+    # 这里的要求是 idx_tokens 在 [state_len - seqlen, state_len) 范围内，也就是只有当 idx_tokens 在这个范围内时，
+    # 才能从 x 中加载数据；而加载数据的范围是 [0, seqlen)；
+    # 这一范围的 idx_tokens 对应 conv_state 中的 [state_len - seqlen + 1, state_len + 1) if IS_SPEC_DECODING
+    # 或者 [state_len, state_len + seqlen)，而其 mask 又始终要求 idx_tokens 在 [0, state_len - seqlen) 范围内，
+    # 所以此时 conv_state 是加载不到数据的；
+    # 反之，conv_state 在 idx_tokens 在 [0, state_len - seqlen) 范围内时，
+    # 能加载到 [num_accepted_tokens, state_len - seqlen + num_accepted_tokens) if IS_SPEC_DECODING
+    # 或者 [seqlen, state_len) 范围内的数据，长度为 state_len - seqlen，而 x 则加载不到数据；
+    # state_len 的值受到 IS_SPEC_DECODING 的影响，所以实际范围是
+    # [num_accepted_tokens, width - 1 + num_accepted_tokens - 1) if IS_SPEC_DECODING
+    # 或者 [seqlen, width - 1)；
     mask_x = (
         (idx_tokens - VAL >= 0)[:, None]
         & (idx_tokens - VAL < seqlen)[:, None]
         & (idx_feats < dim)[None, :]
     )  # token-index  # token-index  # feature-index
     loaded_x = tl.load(x_ptrs, mask_x, 0.0)
+    # 说明：避免指令重排
+    # 参考本文件其他算子里的注释 need this due to the bug in tl.where not enforcing this when data is the result of another tl.load
     tl.debug_barrier()
 
+    # 说明：将读到的 conv_state 和 x 进行合并，token 维度上保持 state_len 长度
+    # conv_state 能加载到数据的时候，x 加载不到数据，反之亦然，所以拼接起来得到 new_conv_state，长度为 state_len；
+    # 注意，state_len = width - 1 + (seqlen - 1) if IS_SPEC_DECODING else width - 1
+    # conv_state 读取的长度是 state_len - seqlen，
+    # 只是起点根据 IS_SPEC_DECODING 不同而不同，开启时起点偏移 num_accepted_tokens，
+    # 不开启时起点偏移 seqlen；也就是说开启 IS_SPEC_DECODING 时，conv_state 可能会丢弃尾部的若干 token 数据，
+    # 这是 spec decoding 的正常效果
     new_conv_state = tl.where(mask, conv_state, loaded_x)
 
+    # 说明：这里注释写错了，应该是 last_idx
+    # 凑齐了 state_len 长度的数据后，写入 last_idx 位置
     # Get the state from the initial_state_idx
     # cache_idx
     conv_states_offset = tl.load(
@@ -945,6 +1109,7 @@ def _causal_conv1d_update_kernel(
     # STEP 4:
     # PRE-LOAD WEIGHTS
     # first kernel column, configured for weights to handle BLOCK_N features in range
+    # 说明：weight 的 shape 是 (dim, width)，KERNEL_WIDTH = width
     w_base = w_ptr + (idx_feats * stride_w_dim)  # [BLOCK_N,]
     mask_w = idx_feats < dim
     if KERNEL_WIDTH >= 2:
@@ -968,6 +1133,7 @@ def _causal_conv1d_update_kernel(
     x_base_1d = x_base  # starting of chunk [BLOCK_N]
     mask_x_1d = idx_feats < dim
 
+    # 说明：weight 的 shape 是 (dim, width)，x 是从移动 + 更新前的 conv_state 中读取的，shape 是 (dim, seqlen)
     # STEP 5: compute each token
     for idx_token in tl.range(seqlen):
         acc = acc_preload
@@ -978,6 +1144,7 @@ def _causal_conv1d_update_kernel(
             if KERNEL_WIDTH == 2:
                 if j == 1:  # KERNEL_WIDTH-1:
                     matrix_w = w_col1
+                    # 说明：从 x 中加载当前 token 的数据
                     x_ptrs_1d = x_base_1d + idx_token * stride_x_token  # [BLOCK_N]
                     matrix_x = tl.load(x_ptrs_1d, mask=mask_x_1d)
             elif KERNEL_WIDTH == 3:
@@ -1031,8 +1198,11 @@ def _causal_conv1d_update_kernel(
                     x_ptrs_1d = x_base_1d + idx_token * stride_x_token  # [BLOCK_N]
                     matrix_x = tl.load(x_ptrs_1d, mask=mask_x_1d)
 
+            # 说明：j = 0 时，等于 w_col0 * col0
             acc += matrix_x * matrix_w  # [BLOCK_N]
 
+        # 说明：每个 token 计算完后，更新 col0, col1, ...
+        # col0 <- col1, col1 <- col2, ... col(KERNEL_WIDTH-2) <- x[current_token]
         if KERNEL_WIDTH == 2:
             col0 = matrix_x
         elif KERNEL_WIDTH == 3:
@@ -1066,18 +1236,26 @@ def _causal_conv1d_update_kernel(
         tl.store(o_ptrs, acc, mask=mask_1d)
 
 
+# 已阅
+# 说明：用于 decode
 def causal_conv1d_update(
     x: torch.Tensor,
     conv_state: torch.Tensor,
+    # 说明：shape 为 [intermediate_size, conv_kernel_size]
     weight: torch.Tensor,
     bias: torch.Tensor | None = None,
     activation: bool | str | None = None,
+    # 说明：conv_state 的索引
     conv_state_indices: torch.Tensor | None = None,
     num_accepted_tokens: torch.Tensor | None = None,
     query_start_loc: torch.Tensor | None = None,
     max_query_len: int = -1,
     pad_slot_id: int = PAD_SLOT_ID,
+    # 说明：conv_state_indices 的索引，对应的元素是 conv_state 的 cache_line 索引，
+    # 对应的 cache_line 用于保存 shift + 更新后的结果
     block_idx_last_scheduled_token: torch.Tensor | None = None,
+    # 说明：conv_state_indices 的索引，对应的元素是 conv_state 的 cache_line 索引，
+    # 对应的 cache_line 用于获取初始状态
     initial_state_idx: torch.Tensor | None = None,
     validate_data=False,
 ):
@@ -1133,6 +1311,7 @@ def causal_conv1d_update(
     if unsqueeze:
         # make it (batch, dim, seqlen) with seqlen == 1
         x = x.unsqueeze(-1)
+    # 说明：确定 batch_size，dim，seqlen
     if query_start_loc is None:
         batch, dim, seqlen = x.shape
     else:
@@ -1140,24 +1319,32 @@ def causal_conv1d_update(
         batch = conv_state_indices.size(0)
         dim = x.size(1)
         seqlen = max_query_len
+    # 说明：第一个维度是 dim
     _, width = weight.shape
+    # 说明：关注 state_len 和权重 width 的关系
     # conv_state: (..., dim, state_len), where state_len >= width - 1
     num_cache_lines, _, state_len = conv_state.size()
 
     if validate_data:
+        # 说明：K 维度
         assert dim == weight.size(0)
+        # 说明：dim 维度要是连续的
         assert conv_state.stride(-2) == 1, (
             f"ERROR: expect contiguous along feat-dim of conv_state (currently stride={conv_state.stride()})"
         )
+        # 说明：关注 state_len 和权重 width 的关系
         assert state_len >= width - 1
+        # 说明：dim == x.size(1) == weight.size(0) == conv_state.size(1)
         # when above happens, we don't shift-left to keep any records in conv_state
         assert dim == conv_state.size(1)
         if conv_state_indices is None:
+            # 说明：即 num_cache_lines >= batch
             assert conv_state.size(0) >= batch
         else:
             assert (batch,) == conv_state_indices.shape
 
         assert num_cache_lines >= batch
+        # 说明：要求 width 维度是连续的
         assert weight.stride(1) == 1  # Need this
 
     # adopt the strategy in vLLM that overwrite on 'x' directly, rather than creating a new tensor 'o'
@@ -1169,17 +1356,22 @@ def causal_conv1d_update(
         stride_x_seq, stride_x_dim, stride_x_token = x.stride()
         stride_o_seq, stride_o_dim, stride_o_token = out.stride()
     else:
+        # 说明：对应 docstring 中说的 [num_tokens, dim] - continuous batching
         # X (dim, cu_seqlen)
         stride_x_token, stride_x_dim = x.stride()
         stride_x_seq = 0
         stride_o_token, stride_o_dim = out.stride()
         stride_o_seq = 0
 
+    # 说明：第一个维度为 num_cache_lines
     stride_istate_seq, stride_istate_dim, stride_istate_token = conv_state.stride()
     stride_state_indices = (
+        # 说明：0 维度对应 batch
         conv_state_indices.stride(0) if conv_state_indices is not None else 0
     )
     if num_accepted_tokens is not None:
+        # 说明：seqlen 是 query 的最大长度，这里因为 num_accepted_tokens 的存在，需要对 state_len 进行调整
+        # 理解/问题：seqlen = 1 + num_draft_tokens，state_len 需要能够容纳 num_draft_tokens 个 token 的状态数据 + 之前的历史状态数据
         state_len = width - 1 + (seqlen - 1)  # effective state_len needed
     else:
         state_len = width - 1
@@ -1229,6 +1421,7 @@ def causal_conv1d_update(
         KERNEL_WIDTH=width,
         SILU_ACTIVATION=activation in ["silu", "swish"],
         IS_VARLEN=query_start_loc is not None,
+        # 说明：APC = Automatic Prefix Caching
         IS_APC_ENABLED=block_idx_last_scheduled_token is not None,
         IS_SPEC_DECODING=num_accepted_tokens is not None,
         NP2_STATELEN=np2_statelen,

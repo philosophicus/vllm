@@ -49,6 +49,7 @@ from vllm.v1.attention.backends.mamba2_attn import Mamba2AttentionMetadata
 # Added by the IBM Team, 2024
 
 
+# 已阅
 # Adapted from transformers.models.mamba2.modeling_mamba2.MambaRMSNormGated
 # --8<-- [start:mixer2_gated_rms_norm]
 @CustomOp.register("mixer2_gated_rms_norm")
@@ -57,7 +58,9 @@ class Mixer2RMSNormGated(CustomOp):
 
     def __init__(
         self,
+        # 说明：intermediate_size
         full_hidden_size: int,
+        # 说明：n_groups
         full_n_groups: int,
         use_rms_norm: bool = True,
         eps: float = 1e-6,
@@ -73,6 +76,8 @@ class Mixer2RMSNormGated(CustomOp):
         self.variance_epsilon = eps
         self.use_rms_norm = use_rms_norm
         if self.use_rms_norm:
+            # 说明：RMSNorm 公式中的 \gamma，
+            # 参考 https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.normalization.RMSNorm.html
             # Register norm weight only if we're actually applying RMSNorm
             self.weight = nn.Parameter(torch.ones(self.per_rank_hidden_size))
             set_weight_attrs(self.weight, {"weight_loader": sharded_weight_loader(0)})
@@ -109,6 +114,7 @@ class Mixer2RMSNormGated(CustomOp):
                 global_sums = tensor_model_parallel_all_reduce(local_sums)
                 # Calculate the variance
                 count = self.tp_size * x.shape[-1]
+                # 说明：一个组内，但是跨 rank 的 mean squared
                 variance = global_sums / count
 
             else:
@@ -157,6 +163,7 @@ class Mixer2RMSNormGated(CustomOp):
         )
 
 
+# 已阅
 def mamba_v2_sharded_weight_loader(
     shard_spec: list[tuple[int, int, float]],
     tp_size: int,
@@ -184,6 +191,7 @@ def mamba_v2_sharded_weight_loader(
             # - size of the loaded shard
             shard_size = full_dim // tp_size
 
+            # 说明：duplicate_groups is True when n_groups == 1, in which case we replicate the groups across all TP ranks.
             # - compute the rank into the loaded shard.
             # - if there is replication, different TP shards will
             #   take from the same rank.
@@ -211,12 +219,15 @@ def mamba_v2_sharded_weight_loader(
             ]  # type: ignore[misc]
 
             # move indexing boundaries
+            # 说明：将同一 rank 上的不同权重（对应不同 spec）拼接在一起
             boundary += shard_size
+            # 说明： loaded_boundary 移动真实的维度大小，即 full_dim - extra
             loaded_boundary += full_dim - extra
 
     return loader
 
 
+# 已阅
 # Adapted from transformers.models.mamba.modeling_mamba.MambaMixer
 # --8<-- [start:mamba_mixer2]
 @PluggableLayer.register("mamba_mixer2")
@@ -284,6 +295,7 @@ class MambaMixer2(MambaBase, PluggableLayer):
         self.conv_kernel_size = conv_kernel_size
         self.activation = activation
 
+        # 说明：intermediate_size = n_heads * head_dim
         self.intermediate_size = intermediate_size
         self.head_dim = head_dim
         self.num_heads = num_heads
@@ -299,6 +311,10 @@ class MambaMixer2(MambaBase, PluggableLayer):
             self.n_groups = n_groups + groups
 
         self.groups_ssm_state_size = self.n_groups * self.ssm_state_size
+        # 说明：conv_dim = num_heads * head_dim + 2 * n_groups * ssm_state_size,
+        # 如上面注释所述，在 num_heads 和 n_groups 中进行分布式切分，确保每个组的所有头在同一个 shard 中
+        # 说明：intermediate_size 用于 X (相当于 V)，groups_ssm_state_size 用于 C 和 B (相当于 Q, K)，
+        # 整体是 Grouped-value attention (GVA) / Grouped-input SSM (GIS)
         self.conv_dim = intermediate_size + 2 * self.groups_ssm_state_size
 
         # Use ColumnParallelLinear with custom weight loaders for both cases:
@@ -308,6 +324,8 @@ class MambaMixer2(MambaBase, PluggableLayer):
 
         self.conv1d = ColumnParallelLinear(
             input_size=conv_kernel_size,
+            # 说明：Mamba1 中是 sequential mamba block，卷积的输出大小为 intermediate_size，
+            # Mamba2 改成了 parallel projection
             output_size=self.conv_dim,
             bias=use_conv_bias,
             quant_config=None,
@@ -316,6 +334,7 @@ class MambaMixer2(MambaBase, PluggableLayer):
 
         self.in_proj = ColumnParallelLinear(
             input_size=hidden_size,
+            # 说明：intermediate_size 用于 gate；conv_dim 用于 X, B, C；num_heads 用于 \Delta
             output_size=intermediate_size + self.conv_dim + self.num_heads,
             bias=use_bias,
             quant_config=quant_config,
@@ -400,6 +419,8 @@ class MambaMixer2(MambaBase, PluggableLayer):
         )
         self.register_buffer("conv_weights", conv_weights, persistent=False)
 
+        # 说明：The number of A heads is always equal to the total heads H,
+        # i.e. each head has a separate input-dependent A decay factor
         # - these are TPed by heads to reduce the size of the
         #   temporal shape
         self.A = nn.Parameter(
@@ -414,11 +435,15 @@ class MambaMixer2(MambaBase, PluggableLayer):
 
         set_weight_attrs(self.D, {"weight_loader": sharded_weight_loader(0)})
         a_weight_loader = composed_weight_loader(
+            # 理解：exp 把无约束参数映射到正数，再加负号变为负数；
+            # 训练时直接优化一个必须为负的参数不方便，所以优化一个无约束参数，再通过这种方式转换以满足 A 的约束条件
             sharded_weight_loader(0), lambda x: -torch.exp(x.float())
         )
         set_weight_attrs(self.A, {"weight_loader": a_weight_loader})
         set_weight_attrs(self.dt_bias, {"weight_loader": sharded_weight_loader(0)})
 
+        # 说明：前面都是列并行，输出投影使用行并行，这样最后使用一个 all_reduce 可以得到最终结果；
+        # 进一步理解，只对中间维度进行切换，保持输入维度 L 和输出维度 hidden_size 不变
         self.out_proj = RowParallelLinear(
             intermediate_size,
             hidden_size,
@@ -428,6 +453,7 @@ class MambaMixer2(MambaBase, PluggableLayer):
             prefix=f"{prefix}.out_proj",
         )
 
+        # 说明：GroupNorm + Gated
         self.norm = Mixer2RMSNormGated(
             intermediate_size, n_groups, self.use_rms_norm, eps=rms_norm_eps
         )
@@ -448,6 +474,7 @@ class MambaMixer2(MambaBase, PluggableLayer):
             raise ValueError(f"Duplicate layer name: {prefix}")
         compilation_config.static_forward_context[prefix] = self
         # The tuple is (conv_state, ssm_state)
+        # 说明：cache 的 shape 见 MambaStateShapeCalculator.mamba2_state_shape
         self.kv_cache = (torch.tensor([]), torch.tensor([]))
 
         self.model_config = model_config
@@ -515,6 +542,7 @@ class MambaMixer2(MambaBase, PluggableLayer):
 
     def conv_ssm_forward(
         self,
+        # 说明：[L, dim // tp_size]
         projected_states: torch.Tensor,
         output: torch.Tensor,
     ):
@@ -539,6 +567,7 @@ class MambaMixer2(MambaBase, PluggableLayer):
             attn_metadata = attn_metadata[self.prefix]
             assert isinstance(attn_metadata, Mamba2AttentionMetadata)
             self_kv_cache = self.kv_cache[forward_context.virtual_engine]
+            # 说明：conv_state 转置前的 shape 是 (block_idx, width-1, dim)，转置后是 (block_idx, dim, width-1)
             # conv_state = (..., dim, width-1) yet contiguous along 'dim'
             conv_state = self_kv_cache[0].transpose(-1, -2)
             ssm_state = self_kv_cache[1]
@@ -564,6 +593,7 @@ class MambaMixer2(MambaBase, PluggableLayer):
         num_prefill_tokens = attn_metadata.num_prefill_tokens  # token count
         has_prefill = num_prefills > 0
         has_decode = num_decodes > 0
+        # 理解：每个 decode 一个 token，不支持 speculative decoding
         num_actual_tokens = num_prefill_tokens + num_decodes
 
         # Separate prefill and decode by splitting varlen input
@@ -651,11 +681,21 @@ class MambaMixer2(MambaBase, PluggableLayer):
                 block_idx_last_scheduled_token=block_idx_last_scheduled_token_p,
                 initial_state_idx=block_idx_last_computed_token_p,
                 num_computed_tokens=num_computed_tokens_p,
+                # 说明：用当前 query sequence 在完整 request sequence 中的位置来对齐 block_size_to_align，
+                # 将 query sequence 中位于 block 尾部的若干 token 的状态
+                # 写入 block_idx_first_scheduled_token_p 和 block_idx_last_scheduled_token_p 间接指向的 conv_state
                 block_size_to_align=mamba_block_size,
                 metadata=attn_metadata,
                 query_start_loc=query_start_loc_p,
             ).transpose(0, 1)[:num_prefill_tokens]
 
+            # 说明：对比 Mamba1 的 Sequential Mapping 和 Mamba2 的 Parallel Mapping
+            # Mamba1: hidden_states 做映射得到 hidden_states_BC，然后通过循环逐 token 进行卷积得到 conv_out，
+            #         对 conv_out 映射+切分得到 time_step，B，C，对 time_step (delta) 单独做映射得到 discrete_time_step，
+            #         最后将 conv_out，discrete_time_step，B，C 送入 SSM 模块得到结果（内部乘以 gate），再做投影得到最终输出；
+            # Mamba2: hidden_states 做映射得到 hidden_states_B_C 和 dt，
+            #         hidden_states_B_C 通过一次卷积得到更新后的 hidden_states_B_C (Parallel 的体现)，切分得到 hidden_states，B，C，
+            #         hidden_states，B，C 和 dt 送入 SSM 模块得到结果
             hidden_states_p, B_p, C_p = self.split_hidden_states_B_C_fn(
                 hidden_states_B_C_p
             )
@@ -674,6 +714,7 @@ class MambaMixer2(MambaBase, PluggableLayer):
                     0,
                 )
 
+            # 说明：varlen_states 的 shape 是 (nchunks, ngroups, chunk_size, chunk_size)
             # NOTE: final output is an in-place update of out tensor
             varlen_states = mamba_chunk_scan_combined_varlen(
                 hidden_states_p.view(
@@ -695,6 +736,7 @@ class MambaMixer2(MambaBase, PluggableLayer):
                 return_intermediate_states=is_mamba_cache_all,
                 dt_softplus=True,
                 dt_limit=(0.0, float("inf")),
+                # 说明：out 的 shape 是 (num_prefill_tokens, num_heads // tp_size, head_dim)，
                 out=preallocated_ssm_out_p.view(num_prefill_tokens, -1, self.head_dim),
                 state_dtype=ssm_state.dtype,
             )
@@ -738,6 +780,8 @@ class MambaMixer2(MambaBase, PluggableLayer):
                     else:
                         first_chunk = 1 + last_chunk_indices_p[seq_idx - 1]
 
+                    # 说明：先不考虑 computed_tokens 的对齐情况，单独计算 scheduled tokens 的对齐情况；
+                    # 对齐是指 chunk 位于 block 尾部，这里找到第一个对齐 chunk 在整个 seq_idx chunk 列表中的 index
                     # First chunk that is aligned on the mamba block boundary
                     first_aligned_chunk = first_chunk + chunk_stride - 1
 
@@ -747,6 +791,8 @@ class MambaMixer2(MambaBase, PluggableLayer):
                         num_computed_tokens_p[seq_idx] % mamba_block_size
                     )
 
+                    # 说明：如果 computed tokens 中有不对齐的部分，那么第一个对齐的 chunk 需要往前移动，
+                    # computed tokens 多出几个 chunk 就往前移动几个 chunk
                     if num_unaligned_computed_tokens > 0:
                         # If the number of computed tokens is not block aligned,
                         # then we need to shift the index accordingly
@@ -754,6 +800,7 @@ class MambaMixer2(MambaBase, PluggableLayer):
                             num_unaligned_computed_tokens // chunk_size
                         )
 
+                    # 说明：varlen_states 的 shape 是 (nchunks, ngroups, chunk_size, chunk_size)
                     # Get states to write
                     from_where = varlen_states[
                         first_aligned_chunk : first_aligned_chunk
@@ -814,16 +861,24 @@ class MambaMixer2(MambaBase, PluggableLayer):
 
             # 3. State Space Model sequence transformation
             n_groups = self.n_groups // self.tp_size
+            # 说明：(num_heads // tp_size) -> (num_heads // tp_size, head_dim, ssm_state_size)
             A_d = (
                 self.A[:, None, ...][:, :, None]
                 .expand(-1, self.head_dim, self.ssm_state_size)
                 .to(dtype=torch.float32)
             )
+            # 说明：dt_d is (num_decodes, num_heads // tp_size) -> (num_decodes, num_heads // tp_size, head_dim)
             dt_d = dt_d[:, :, None].expand(-1, -1, self.head_dim)
+            # 说明：dt_bias is (num_heads // tp_size) -> (num_heads // tp_size, head_dim)
             dt_bias = self.dt_bias[:, None, ...].expand(-1, self.head_dim)
+            # 说明：D_d is (num_heads // tp_size) -> (num_heads // tp_size, head_dim)
             D_d = self.D[:, None, ...].expand(-1, self.head_dim)
+            # 说明：B_d and C_d are (num_decodes, groups_ssm_state_size // tp_size) ->
+            # (num_decodes, n_groups, ssm_state_size)，这里的 n_groups 是经过了 TP 切分的 n_groups
             B_d = B_d.view(-1, n_groups, B_d.shape[1] // n_groups)
             C_d = C_d.view(-1, n_groups, C_d.shape[1] // n_groups)
+            # 说明：hidden_states_d is (num_decodes, intermediate_size // tp_size) ->
+            # (num_decodes, num_heads // tp_size, head_dim)
             hidden_states_d = hidden_states_d.view(
                 -1, self.num_heads // self.tp_size, self.head_dim
             )
@@ -849,6 +904,7 @@ class MambaMixer2(MambaBase, PluggableLayer):
                 is_blackwell=self.is_blackwell,
             )
 
+    # 已阅
     def get_state_dtype(self) -> tuple[torch.dtype, torch.dtype]:
         assert self.model_config is not None
         assert self.cache_config is not None
@@ -858,6 +914,7 @@ class MambaMixer2(MambaBase, PluggableLayer):
             self.cache_config.mamba_ssm_cache_dtype,
         )
 
+    # 已阅
     def get_state_shape(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
         return MambaStateShapeCalculator.mamba2_state_shape(
             intermediate_size=self.intermediate_size,

@@ -10,6 +10,7 @@ from vllm.triton_utils import tl, triton
 from vllm.utils import random_uuid
 
 
+# 说明：用于存储模型输入的各种缓冲区
 class InputBuffers:
     def __init__(
         self,
@@ -21,11 +22,14 @@ class InputBuffers:
         self.max_num_tokens = max_num_tokens
         self.device = device
 
+        # 说明：待计算的 token ids
         self.input_ids = torch.zeros(max_num_tokens, dtype=torch.int32, device=device)
+        # 说明：待计算的 token 在各自序列中的位置索引
         self.positions = torch.zeros(max_num_tokens, dtype=torch.int64, device=device)
         self.query_start_loc = torch.zeros(
             max_num_reqs + 1, dtype=torch.int32, device=device
         )
+        # 说明：每个请求的 seq_len，seq_len = num_computed_tokens + query_len
         self.seq_lens = torch.zeros(max_num_reqs, dtype=torch.int32, device=device)
 
 
@@ -72,6 +76,7 @@ class InputBatch:
     slot_mappings: dict[str, torch.Tensor]
 
     # [total_num_logits]
+    # 说明：logits_indices 保存了每个 logit 在 input_ids 中的位置索引
     logits_indices: torch.Tensor
     # [num_reqs + 1]
     cu_num_logits: torch.Tensor
@@ -150,6 +155,8 @@ class InputBatch:
         )
 
 
+# 已阅
+# 说明：填充 input_ids 和 next_prefill_tokens
 @triton.jit
 def _prepare_prefill_inputs_kernel(
     input_ids_ptr,
@@ -162,31 +169,44 @@ def _prepare_prefill_inputs_kernel(
     num_computed_tokens_ptr,
     BLOCK_SIZE: tl.constexpr,
 ):
+    # 说明：请求在 batch 中的索引
     batch_idx = tl.program_id(0)
+    # 说明：请求映射的索引
     req_state_idx = tl.load(idx_mapping_ptr + batch_idx)
+    # 说明：请求的 prefill 长度
     prefill_len = tl.load(prefill_lens_ptr + req_state_idx)
+    # 说明：请求已经计算的 token 数量，即从 kv cache 中匹配到的 token 数量
     num_computed = tl.load(num_computed_tokens_ptr + req_state_idx)
     if num_computed >= prefill_len:
         # Not prefill.
         return
 
+    # 说明：请求对应的 query 的起始位置
     query_start = tl.load(query_start_loc_ptr + batch_idx)
+    # 说明：下一个请求的 query 的起始位置
     query_end = tl.load(query_start_loc_ptr + batch_idx + 1)
     query_len = query_end - query_start
 
+    # 说明：请求的 prefill token ids 起始位置的指针
     prefill_ptr = prefill_token_ids_ptr + req_state_idx * prefill_token_ids_stride
     for i in range(0, query_len, BLOCK_SIZE):
         block = i + tl.arange(0, BLOCK_SIZE)
         mask = block < query_len
+        # 说明：从 prefill_token_ids 中加载需要 prefill 的 token ids，然后拼接到 input_ids 中
+        # 说明：这里有可能会加载未参与本轮的 token ids，后面会在 _combine_sampled_and_draft_tokens_kernel 
+        # 中被覆盖
         tokens = tl.load(prefill_ptr + num_computed + block, mask=mask)
         tl.store(input_ids_ptr + query_start + block, tokens, mask=mask)
 
     next_pos = num_computed + query_len
     if next_pos < prefill_len:
+        # 说明：下一个位置仍然要做 prefill，即本轮没有完成 prefill，需要记录下一个 prefill token id
         next_token = tl.load(prefill_ptr + next_pos)
         tl.store(next_prefill_tokens_ptr + req_state_idx, next_token)
 
 
+# 已阅
+# 说明：填充 input_ids 和 next_prefill_tokens
 def prepare_prefill_inputs(
     input_ids: torch.Tensor,
     next_prefill_tokens: torch.Tensor,
@@ -210,6 +230,10 @@ def prepare_prefill_inputs(
     )
 
 
+# 已阅
+# 说明：准备 positions 和 seq_lens
+# position: 待计算的 token 在各自序列中的位置索引
+# seq_len: 每个请求的序列长度 = 已计算的 token 数量 + 待计算的 token 数量
 @triton.jit
 def _prepare_pos_seq_lens_kernel(
     pos_ptr,
@@ -222,6 +246,7 @@ def _prepare_pos_seq_lens_kernel(
 ):
     req_id = tl.program_id(0)
     num_reqs = tl.num_programs(0) - 1
+    # req_id 的范围是 [0, num_reqs]
     if req_id == num_reqs:
         # Pad unused seq_lens as 0 for full CUDA graphs.
         for i in tl.range(num_reqs, max_num_reqs, BLOCK_SIZE):
@@ -230,6 +255,7 @@ def _prepare_pos_seq_lens_kernel(
             tl.store(seq_lens_ptr + block, 0, mask=mask)
         return
 
+    # 说明：请求映射的索引
     req_state_idx = tl.load(idx_mapping_ptr + req_id)
     num_computed_tokens = tl.load(num_computed_tokens_ptr + req_state_idx)
 
@@ -240,6 +266,7 @@ def _prepare_pos_seq_lens_kernel(
     seq_len = num_computed_tokens + query_len
     tl.store(seq_lens_ptr + req_id, seq_len)
 
+    # 说明：待计算的 token 在所在序列中的 position index
     for i in tl.range(0, query_len, BLOCK_SIZE):
         block = i + tl.arange(0, BLOCK_SIZE)
         mask = block < query_len
@@ -247,6 +274,10 @@ def _prepare_pos_seq_lens_kernel(
         tl.store(pos_ptr + start + block, pos, mask=mask)
 
 
+# 已阅
+# 说明：准备 positions 和 seq_lens
+# position: 待计算的 token 在各自序列中的位置索引
+# seq_len: 每个请求的序列长度 = 已计算的 token 数量 + 待计算的 token 数量
 def prepare_pos_seq_lens(
     idx_mapping: torch.Tensor,
     query_start_loc: torch.Tensor,
@@ -268,6 +299,10 @@ def prepare_pos_seq_lens(
     )
 
 
+# 已阅
+# 说明：合并 sampled tokens 和 draft tokens 到 input_ids 中，
+# 此时 input_ids 中已经被填充了 prefill tokens；
+# 记录 logits 在拼接起来的 query 中的位置索引到 logits_indices 中。
 @triton.jit
 def _combine_sampled_and_draft_tokens_kernel(
     input_ids_ptr,
@@ -289,12 +324,16 @@ def _combine_sampled_and_draft_tokens_kernel(
     cu_num_logits_start = tl.load(cu_num_logits_ptr + batch_idx)
     cu_num_logits_end = tl.load(cu_num_logits_ptr + batch_idx + 1)
     num_logits = cu_num_logits_end - cu_num_logits_start
+    # 说明：num_logits = 1 + num_draft_tokens，1 表示 sampled token
     num_draft_tokens = num_logits - 1
 
     # Compute the logits indices.
     block = tl.arange(0, BLOCK_SIZE)
     query_end = tl.load(query_start_loc_ptr + batch_idx + 1)
+    # 说明：logits 起始位置 = 下一个请求的 query 起始位置 - num_logits
+    # 存储在每个请求的 query 的尾部，可能会覆盖掉原来填充的 prefill token ids（如果有的话）
     logits_start = query_end - num_logits
+    # 说明：记录 logits 在 query 中的位置索引
     tl.store(
         logits_indices_ptr + cu_num_logits_start + block,
         logits_start + block,
@@ -305,6 +344,7 @@ def _combine_sampled_and_draft_tokens_kernel(
     prefill_len = tl.load(prefill_len_ptr + req_state_idx)
     if seq_len <= prefill_len:
         # Handling prefill tokens. No sampled or draft tokens.
+        # 说明：处理的都是 prefill token，没有 sampled 或 draft token
         return
 
     # Write the last sampled token ID to input_ids.
@@ -325,6 +365,10 @@ def _combine_sampled_and_draft_tokens_kernel(
         )
 
 
+# 已阅
+# 说明：合并 sampled tokens 和 draft tokens 到 input_ids 中，
+# 此时 input_ids 中已经被填充了 prefill tokens；
+# 记录 logits 在拼接起来的 query 中的位置索引到 logits_indices 中。
 def combine_sampled_and_draft_tokens(
     input_ids: torch.Tensor,
     idx_mapping: torch.Tensor,

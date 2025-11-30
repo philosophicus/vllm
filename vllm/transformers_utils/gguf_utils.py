@@ -19,6 +19,7 @@ from .repo_utils import list_filtered_repo_files
 logger = init_logger(__name__)
 
 
+# 已阅
 @cache
 def check_gguf_file(model: str | PathLike) -> bool:
     """Check if the file is a GGUF model."""
@@ -38,6 +39,8 @@ def check_gguf_file(model: str | PathLike) -> bool:
         return False
 
 
+# 已阅
+# 说明：检查模型标识符是否符合远程 GGUF 模型的格式要求，格式为 repo_id:quant_type
 @cache
 def is_remote_gguf(model: str | Path) -> bool:
     """Check if the model is a remote GGUF model."""
@@ -54,6 +57,8 @@ def is_remote_gguf(model: str | Path) -> bool:
 _GGUF_QUANT_SUFFIXES = ("_M", "_S", "_L", "_XL", "_XS", "_XXS")
 
 
+# 已阅
+# 说明：检查 quant_type 是否是 GGUF 支持的量化类型
 def is_valid_gguf_quant_type(gguf_quant_type: str) -> bool:
     """Check if the quant type is a valid GGUF quant type.
 
@@ -74,6 +79,8 @@ def is_valid_gguf_quant_type(gguf_quant_type: str) -> bool:
     return False
 
 
+# 已阅
+# 说明：将远程 GGUF 模型标识符拆分为 (repo_id, quant_type)
 def split_remote_gguf(model: str | Path) -> tuple[str, str]:
     """Split the model into repo_id and quant type."""
     model = str(model)
@@ -88,6 +95,8 @@ def split_remote_gguf(model: str | Path) -> tuple[str, str]:
     )
 
 
+# 已阅
+# 说明：检查模型是否是 GGUF 模型
 def is_gguf(model: str | Path) -> bool:
     """Check if the model is a GGUF model.
 
@@ -260,6 +269,8 @@ def maybe_patch_hf_config_from_gguf(
     return hf_config
 
 
+# 已阅
+# 说明：根据 repo_id 和 quant_type 获取 GGUF 文件路径
 def get_gguf_file_path_from_hf(
     repo_id: str | Path,
     quant_type: str,

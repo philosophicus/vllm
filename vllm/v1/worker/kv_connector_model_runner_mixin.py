@@ -110,6 +110,13 @@ class KVConnectorModelRunnerMixin:
 
             kv_connector.clear_connector_metadata()
 
+    # 已阅
+    # 翻译：是否使用统一的 KV Cache 布局
+    # 统一的 KV Cache 布局意味着所有层的 KV Cache 将共享相同的底层张量。对于给定 block number，KV 数据将是连续存储的
+    # 三个条件：
+    # 1. KV Cache 配置仅包含一个组，且所有层具有相同的页面大小
+    # 2. 配置了 KV 连接器，且 KV 连接器实例倾向于使用此布局（prefer_cross_layer_blocks() 返回 True）
+    # 3. Flash Attention 后端支持此布局（get_kv_cache_stride_order(True) 包含 num_layers 维度的位置）
     @staticmethod
     def use_uniform_kv_cache(
         attn_groups: list[list[AttentionGroup]],
@@ -159,6 +166,7 @@ class KVConnectorModelRunnerMixin:
 
         attn_backend = attn_group.backend
         kv_cache_shape = attn_backend.get_kv_cache_shape(
+            # 理解：传入一个任意的 block number 即可，因为这里只是为了获取 shape 信息用于最后的长度判断
             1234,
             kv_cache_spec.block_size,
             kv_cache_spec.num_kv_heads,
@@ -176,6 +184,7 @@ class KVConnectorModelRunnerMixin:
         # check that attention backend include a layers dimension
         return len(kv_cache_stride_order) == len(kv_cache_shape) + 1
 
+    # 已阅
     @staticmethod
     def allocate_uniform_kv_caches(
         kv_cache_config: KVCacheConfig,
@@ -211,20 +220,25 @@ class KVConnectorModelRunnerMixin:
             kv_cache_tensor.size for kv_cache_tensor in kv_cache_config.kv_cache_tensors
         )
         assert len(tensor_sizes) == 1
+        # 说明：tensor_size is the size of a single layer's KV cache tensor
         tensor_size = tensor_sizes.pop()
 
         page_size = kv_cache_spec.page_size_bytes
         assert tensor_size % page_size == 0
+        # 说明：num_blocks is the number of pages for a single layer's KV cache tensor
         num_blocks = tensor_size // page_size
         num_layers = len(kv_cache_config.kv_cache_tensors)
+        # 说明：total_size is the size of all layers' KV cache tensors combined, i.e., the available memory size
         total_size = tensor_size * num_layers
 
         assert len(kernel_block_sizes) == 1
         kernel_block_size = kernel_block_sizes[0]
+        # 说明：一个逻辑 block 对应几个物理 block
         num_blocks_per_kv_block = kv_cache_spec.block_size // kernel_block_size
         kernel_num_blocks = num_blocks * num_blocks_per_kv_block
 
         attn_backend = attn_group.backend
+        # 说明：kernel_num_blocks * kernel_block_size = num_blocks * block_size，保持 page_size 不变
         kv_cache_shape = attn_backend.get_kv_cache_shape(
             kernel_num_blocks,
             kernel_block_size,
@@ -237,6 +251,12 @@ class KVConnectorModelRunnerMixin:
         kv_cache_shape = (num_layers,) + kv_cache_shape
 
         try:
+            # 说明：Note that the actual placement of the num_layers dimensions 
+            # in the unified layers tensors will be determined by the attention 
+            # backend.
+            # Thus, the layers KV data may still not be contiguous per block 
+            # if the attention backend does not support it.
+            # 是否跨层连续，还要看 attention backend 的支持情况
             kv_cache_stride_order = attn_backend.get_kv_cache_stride_order(
                 include_num_layers_dimension=True
             )
@@ -259,11 +279,13 @@ class KVConnectorModelRunnerMixin:
         inv_order = [
             kv_cache_stride_order.index(i) for i in range(len(kv_cache_stride_order))
         ]
+        # 说明：permuted_kv_cache 的形状是 (num_layers, ...original shape...)
         permuted_kv_cache = cross_layers_kv_cache.permute(*inv_order)
 
         kv_caches = {}
         for i, kv_cache_tensor in enumerate(kv_cache_config.kv_cache_tensors):
             tensor = permuted_kv_cache[i]
+            # 理解：此时只有一个组，所以 shared_by 中只有一个层名
             for layer_name in kv_cache_tensor.shared_by:
                 kv_caches[layer_name] = tensor
 

@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+# 已阅
+# 说明：实现类参考 CPUOffloadingSpec
 class OffloadingSpec(ABC):
     """Spec for an offloading connector"""
 
@@ -40,6 +42,7 @@ class OffloadingSpec(ABC):
             self.extra_config.get("block_size", self.gpu_block_size)
         )
 
+        # 说明：offloaded_block_size 必须是 gpu_block_size 的整数倍，默认相等
         assert self.offloaded_block_size % self.gpu_block_size == 0
 
     @abstractmethod

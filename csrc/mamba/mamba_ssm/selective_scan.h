@@ -61,6 +61,7 @@ struct SSMParamsBase {
     void *__restrict__ delta_ptr;
     void *__restrict__ delta_bias_ptr;
     void *__restrict__ out_ptr;
+    // 说明：shape 为 (batch, dim, dstate)
     void *__restrict__ ssm_states_ptr;
     void *__restrict__ z_ptr;
     void *__restrict__ out_z_ptr;
@@ -188,10 +189,16 @@ template<typename scalar_t> struct SSMScanOp;
 template<>
 struct SSMScanOp<float> {
     __device__ __forceinline__ float2 operator()(const float2 &ab0, const float2 &ab1) const {
+        // 说明：associative binary operator，参考 Mamba2 论文中的 Section B.2.2 Parallel Associative Scan 一节中的
+        // 式子 22，(a_t, b_t) op (a_s, b_s) = (a_t * a_s, a_t * b_s + b_t)
+        // 得到 (ab1.x, ab1.y) op (ab0.x, ab0.y) = (ab1.x * ab0.x, ab1.x * ab0.y + ab1.y)
         return make_float2(ab1.x * ab0.x, ab1.x * ab0.y + ab1.y);
     }
 };
 
+// 说明：invoked by the first warp in the block, and the value returned by lane0
+// in that warp is used as the “seed” value that logically prefixes the thread block’s
+// scan inputs.
 // A stateful callback functor that maintains a running prefix to be applied
 // during consecutive scan operations.
 template <typename scalar_t> struct SSMScanPrefixCallbackOp {
@@ -204,6 +211,7 @@ template <typename scalar_t> struct SSMScanPrefixCallbackOp {
     __device__ scan_t operator()(scan_t block_aggregate) {
         scan_t old_prefix = running_prefix;
         running_prefix = SSMScanOp<scalar_t>()(running_prefix, block_aggregate);
+        // 说明：将属性更新为新的 running_prefix，返回旧的 running_prefix
         return old_prefix;
     }
 };
@@ -244,9 +252,13 @@ inline __device__ void load_weight(typename Ktraits::input_t *Bvar,
         using vec_t = typename Ktraits::vec_t;
         typename Ktraits::BlockLoadWeightVecT(smem_load_weight_vec).Load(
             reinterpret_cast<vec_t*>(Bvar),
+            // 说明：转换为元素类型 vec_t，长度为 kNLoads 的向量数组，以实现向量化加载
+            // 总长度保持不变，因为 vec_t 包含 kNElts 个 input_t，所以 kNLoads * kNElts = kNItems
             reinterpret_cast<vec_t(&)[Ktraits::kNLoads]>(B_vals_load)
       );
     } else {
+        // 说明：seqlen 对应参数 block_items_end，表示有效的 item 数量，
+        // 线程数 * 每个线程加载的数量最大不能超过 block_items_end，否则会访问越界的内存。
         typename Ktraits::BlockLoadWeightT(smem_load_weight).Load(Bvar, B_vals_load, seqlen, 0.f);
     }
     // #pragma unroll

@@ -25,6 +25,8 @@ _FP8_MIN, _FP8_MAX = get_fp8_min_max()
 _FP8_MIN_SCALING_FACTOR = 1.0 / (_FP8_MAX * 512.0)
 
 
+# 待看
+# 说明：对输入张量进行 FP8 量化（逐张量、逐 token、逐通道或逐组）。支持静态和动态量化。
 # --8<-- [start:quant_fp8]
 @CustomOp.register("quant_fp8")
 class QuantFP8(CustomOp):

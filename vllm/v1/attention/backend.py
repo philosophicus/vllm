@@ -49,6 +49,11 @@ class AttentionBackend(ABC):
     # For some attention backends, we allocate an output tensor before
     # calling the custom op. When piecewise cudagraph is enabled, this
     # makes sure the output tensor is allocated inside the cudagraph.
+    # 说明：The piecewise cudagraph also has fine-grained memory management.
+    #   The purpose is to only exclude the attention kernel from cudagraph,
+    #   while keeping all the rest modules and the memory allocation operations
+    #   in the cudagraph. This is why the attention operation in V1 has
+    #   the output tensor as the input of the attention.
     accept_output_buffer: bool = False
     supported_dtypes: ClassVar[list[torch.dtype]] = [torch.float16, torch.bfloat16]
     supported_kv_cache_dtypes: ClassVar[list["CacheDType"]] = ["auto", "bfloat16"]
@@ -283,6 +288,7 @@ class AttentionMetadata:
 T = TypeVar("T", bound=AttentionMetadata)
 
 
+# 说明：关注类的 docstring
 @dataclass
 class CommonAttentionMetadata:
     """
@@ -296,6 +302,7 @@ class CommonAttentionMetadata:
     query_start_loc_cpu: torch.Tensor
     """(batch_size + 1,), the start location of each request in query Tensor"""
 
+    # 说明：seq_lens 存储了每个请求的 computed + scheduled tokens 总量
     seq_lens: torch.Tensor
     """(batch_size,), the number of computed tokens for each request"""
 
@@ -310,6 +317,7 @@ class CommonAttentionMetadata:
     """Longest context length (may be an upper bound)"""
 
     block_table_tensor: torch.Tensor
+    # 说明：每个 token 对应的 slot
     slot_mapping: torch.Tensor
 
     causal: bool = True
@@ -372,6 +380,7 @@ class CommonAttentionMetadata:
             self._num_computed_tokens_cpu = self.seq_lens_cpu - query_seq_lens
         return self._num_computed_tokens_cpu
 
+    # 已阅
     def compute_num_computed_tokens(self) -> torch.Tensor:
         """Compute num_computed_tokens on device (seq_lens - query_lens)."""
         if self._num_computed_tokens_cache is None:
@@ -413,6 +422,7 @@ class CommonAttentionMetadata:
 M = TypeVar("M")
 
 
+# 已阅
 class AttentionCGSupport(Enum):
     """Constants for the cudagraph support of the attention backend
     Here we do not consider the cascade attention, as currently
@@ -496,6 +506,7 @@ class AttentionMetadataBuilder(ABC, Generic[M]):
         ):
             self.reorder_batch_threshold = 1
 
+    # 说明：核心方法，根据 CommonAttentionMetadata 构建具体的 AttentionMetadata
     @abstractmethod
     def build(
         self,
@@ -624,6 +635,7 @@ class AttentionImplBase(ABC, Generic[T]):
 
     # some attention backends might not always want to return lse
     # even if they can return lse (for efficiency reasons)
+    # 说明：lse = LogSumExp
     need_to_return_lse_for_decode: bool = False
 
     # Whether this attention implementation supports pre-quantized query input.
@@ -828,6 +840,8 @@ def is_quantized_kv_cache(kv_cache_dtype: str) -> bool:
     return kv_cache_dtype.startswith("fp8")
 
 
+# 说明：这个函数的作用是动态创建一个 AttentionBackend 的子类，并且重写 get_builder_cls 方法，
+# 使其返回指定的 builder_cls
 def subclass_attention_backend(
     name_prefix: str,
     attention_backend_cls: type[AttentionBackend],

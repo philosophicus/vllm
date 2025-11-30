@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+# 已阅
 class _AttentionBackendEnumMeta(EnumMeta):
     """Metaclass for AttentionBackendEnum to provide better error messages."""
 
@@ -25,12 +26,15 @@ class _AttentionBackendEnumMeta(EnumMeta):
         except KeyError:
             members = cast("dict[str, Enum]", cls.__members__).keys()
             valid_backends = ", ".join(members)
+            # 说明：from None 把异常的 __cause__ 设置为 None，同时抑制 __context__的自动显示，
+            # 只显示指定的异常提示
             raise ValueError(
                 f"Unknown attention backend: '{name}'. "
                 f"Valid options are: {valid_backends}"
             ) from None
 
 
+# 已阅
 class AttentionBackendEnum(Enum, metaclass=_AttentionBackendEnumMeta):
     """Enumeration of all supported attention backends.
 
@@ -81,6 +85,7 @@ class AttentionBackendEnum(Enum, metaclass=_AttentionBackendEnumMeta):
     # set to None to avoid alias with other backend, whose value is an empty string
     CUSTOM = None
 
+    # 已阅
     def get_path(self, include_classname: bool = True) -> str:
         """Get the class path for this backend (respects overrides).
 
@@ -125,6 +130,7 @@ class AttentionBackendEnum(Enum, metaclass=_AttentionBackendEnumMeta):
         _ATTN_OVERRIDES.pop(self, None)
 
 
+# 已阅
 class MambaAttentionBackendEnum(Enum, metaclass=_AttentionBackendEnumMeta):
     """Enumeration of all supported mamba attention backends.
 
@@ -160,6 +166,7 @@ class MambaAttentionBackendEnum(Enum, metaclass=_AttentionBackendEnumMeta):
                 f"Use register_backend(Backend.{self.name}, 'your.module.YourClass')"
             )
         if not include_classname:
+            # 说明：要求不包含 class name 时，仅返回模块路径
             path = path.rsplit(".", 1)[0]
         return path
 
@@ -202,6 +209,7 @@ _ATTN_OVERRIDES: dict[AttentionBackendEnum, str] = {}
 _MAMBA_ATTN_OVERRIDES: dict[MambaAttentionBackendEnum, str] = {}
 
 
+# 已阅
 def register_backend(
     backend: AttentionBackendEnum | MambaAttentionBackendEnum,
     class_path: str | None = None,

@@ -214,6 +214,8 @@ def apply_penalties(
     )
 
 
+# 已阅
+# 说明：对 prompt token ids 和 output token ids 进行计数，后续用于 penalty
 @triton.jit(do_not_specialize=["prefill_len", "prompt_len"])
 def _bincount_kernel(
     prefill_token_ids_ptr,
@@ -223,18 +225,34 @@ def _bincount_kernel(
     output_bin_counts_ptr,
     BLOCK_SIZE: tl.constexpr,
 ):
+    # 说明：triton.program_id(0) gives the block index
     block_idx = tl.program_id(0)
+    # 说明：如果当前 block 的起始位置已经超过 prefill_len，则直接返回
+    # prefill tokens ids = prompt token ids + output token ids
     if block_idx * BLOCK_SIZE >= prefill_len:
         return
 
+    # 说明：block 的类型是 tl.arange(0, BLOCK_SIZE)，表示当前 block 中的所有位置的索引
     block = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    # 说明：处理 prompt token ids，判断当前 block 有 prompt token id 存在
     if block_idx * BLOCK_SIZE < prompt_len:
+        # 说明：mask 表示当前 block 中哪些位置的索引小于 prompt_len
         mask = block < prompt_len
+        # 说明：prefill_tokens 表示
         prefill_tokens = tl.load(prefill_token_ids_ptr + block, mask=mask)
+        # 说明：对于 prefill token ids，计算对应的字节和 bit 位置
         idx = prefill_tokens // 32
         bit_idx = prefill_tokens % 32
+        # 说明：将对应位置的 bit 设为 1，表示该 token 出现在提示词中
         bit = tl.full((BLOCK_SIZE,), 1, tl.int32) << bit_idx
+        # 说明：使用原子操作将 bit 设置到 prompt_bin_mask 中，避免数据竞争
+        # 利用 mask 来控制只对 prompt token ids 进行操作
         tl.atomic_or(prompt_bin_mask_ptr + idx, bit, mask=mask)
+    # 说明：处理 output token ids，判断当前 block 有 output token id 存在
+    # 问题：为什么会用 >= prompt_len 来判断有 output token ids？
+    # 如果 prompt_len == prefill_len 且数量恰为 block 的整数倍，如 2048，此时没有 output token ids；
+    # 对于 index = 1 的 block，(1+1) * BLOCK_SIZE >= prompt_len 成立，block < prefill_len 全部成立，
+    # block >= prompt_len 全部不成立，mask 全部为 False，不会进行任何操作，这种情况直接不进分支比较好？
     if (block_idx + 1) * BLOCK_SIZE >= prompt_len:
         mask = block < prefill_len
         mask &= block >= prompt_len
@@ -242,6 +260,7 @@ def _bincount_kernel(
         tl.atomic_add(output_bin_counts_ptr + prefill_tokens, 1, mask=mask)
 
 
+# 已阅
 def bincount(
     prefill_token_ids: torch.Tensor,
     prefill_len: int,

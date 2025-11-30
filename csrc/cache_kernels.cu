@@ -27,6 +27,7 @@ typedef __hip_bfloat16 __nv_bfloat16;
 #if defined(__gfx942__)
 constexpr float kFp8ScaleDivisor = 224.f;
 #else
+// 说明：标准 E4M3 格式的数值范围通常为 ‌[-448, 448]‌
 constexpr float kFp8ScaleDivisor = 448.f;
 #endif
 
@@ -433,6 +434,8 @@ __global__ void concat_and_cache_ds_mla_kernel(
       *reinterpret_cast<const uint64_t*>(result);
 }
 
+// 说明：cache_t 表示输出类型，scalar_t 表示输入类型
+// 说明：将 k 张量中的值进行量化，并存储到 kv_cache 中；还会计算并存储 scale 值，存储位置在 k 张量量化值之后
 template <typename scalar_t, typename cache_t, Fp8KVCacheDataType kv_dt>
 __global__ void indexer_k_quant_and_cache_kernel(
     const scalar_t* __restrict__ k,  // [num_tokens, head_dim]
@@ -440,6 +443,7 @@ __global__ void indexer_k_quant_and_cache_kernel(
     const int64_t* __restrict__ slot_mapping,  // [num_tokens]
     const int head_dim,                        // dimension of each head
     const int quant_block_size,                // quantization block size
+    // 说明：一个 block 包含多少个 token 的 kv_cache
     const int cache_block_size,                // cache block size
     const int cache_stride,  // stride for each token in kv_cache
 
@@ -447,6 +451,11 @@ __global__ void indexer_k_quant_and_cache_kernel(
 ) {
   constexpr int VEC_SIZE = 4;
   const int64_t token_idx = blockIdx.x;
+  // 说明：blockIdx.y 表示一个 token 中的第几个 block；blockDim.y * blockDim.x 表示一个 block 的全部线程数；
+  // blockIdx.y * blockDim.y * blockDim.x 表示相同 token 前面几个 block 负责处理的维度数；
+  // blockDim.x = 32, blockDim.y = VEC_SIZE = 4，threadIdx.y * blockDim.x + threadIdx.x 表示当前线程负责处理的维度偏移量，
+  // 分配顺序为（threadIdx.y, threadIdx.x），即外层为 y，内层为 x；
+  // 说明：每个线程负责处理 VEC_SIZE 个连续的维度，所以最后乘以 VEC_SIZE
   const int64_t head_dim_idx = (blockIdx.y * blockDim.y * blockDim.x +
                                 threadIdx.y * blockDim.x + threadIdx.x) *
                                VEC_SIZE;
@@ -459,14 +468,20 @@ __global__ void indexer_k_quant_and_cache_kernel(
     return;
   }
 
+  // 说明：float2 对应两个 float32 元素，占用 8 字节
+  // token_idx * head_dim + head_dim_idx 表示当前线程负责处理的第一个维度在整个 k 张量中的偏移量；
+  // 理解：每个线程处理 VEC_SIZE 个值，同时 8 个字节包含 VEC_SIZE 个元素？通过下面方式得到当前线程对应的 float2 值？
   float2 k_val = (reinterpret_cast<const float2*>(
       k))[(token_idx * head_dim + head_dim_idx) / VEC_SIZE];
+  // 说明：将地址转换为 scalar_t*，后续按元素真实类型访问
   scalar_t* k_val_ptr = reinterpret_cast<scalar_t*>(&k_val);
+  // 说明：计算线程内 VEC_SIZE 个元素的 AbsMax
   float amax = 0.0f;
   for (int i = 0; i < VEC_SIZE; i++) {
     amax = fmaxf(amax, fabsf(float(k_val_ptr[i])));
   }
 
+  // 说明：使用 warp shuffle 指令，计算整个 warp 内的最大值
   // Reduced amax
   for (int mask = 16; mask > 0; mask /= 2) {
 #ifdef USE_ROCM
@@ -479,6 +494,7 @@ __global__ void indexer_k_quant_and_cache_kernel(
   float scale = fmaxf(amax, 1e-4) / kFp8ScaleDivisor;
 
   if (use_ue8m0) {
+    // 说明：UE8M0 格式要求 scale 必须是 2 的幂次方 [2^(-127), 2^128]
     scale = exp2f(ceilf(log2f(scale)));
   }
 
@@ -489,14 +505,24 @@ __global__ void indexer_k_quant_and_cache_kernel(
         fp8::scaled_convert<cache_t, scalar_t, kv_dt>(k_val_ptr[i], scale);
   }
   if (threadIdx.x == 0) {
+    // 说明：存储 scale 值，位置在 kv_cache 的后面部分
     const int64_t dst_scale_idx =
         block_idx * cache_block_size * cache_stride +
+        // 说明：cache_block_size * head_dim 表示 block 内所有 token 的 quantized k 值存储完之后的位置
         cache_block_size * head_dim +
+        // 说明：block_offset * head_dim + head_dim_idx 表示当前线程负责处理的第一个维度在 block 内的位置，
+        // 除以 quant_block_size 是因为每 quant_block_size 个维度共用一个 scale 值，
+        // 乘以 4 是因为每个 scale 值占用 4 字节（float32）
         (block_offset * head_dim + head_dim_idx) * 4 / quant_block_size;
+    // 说明：将 kv_cache 转换为 float*，然后根据计算的索引存储 scale 值
     reinterpret_cast<float*>(kv_cache)[dst_scale_idx / 4] = scale;
   }
 }
 
+// 已阅
+// 说明：从 kv_cache 中将量化的 k 值和 scale 值提取出来，存储到 dst_k 和 dst_scale 中
+// 说明：一个 block 处理 BLOCK_Y_SIZE 个 token，每个 token 有 8 * VEC_SIZE 个维度；
+// 一个 block 包含 8 * BLOCK_Y_SIZE 个线程，每个线程处理 VEC_SIZE 个连续的维度
 template <int BLOCK_Y_SIZE>
 __global__ void cp_gather_indexer_k_quant_cache_kernel(
     const char* __restrict__ kv_cache,  // [num_blocks, block_size,
@@ -507,6 +533,7 @@ __global__ void cp_gather_indexer_k_quant_cache_kernel(
     const int* __restrict__ block_table,  // [batch_size, num_blocks]
     const int* __restrict__ cu_seq_lens,  // [batch_size + 1]
     const int batch_size,                 // batch size
+    // 说明：dst_k.stride(0)
     const int64_t token_stride,           // stride for each token in dst_k
     const int64_t head_dim,               // dimension of each head
     const int64_t block_stride,           // stride for each block in kv_cache
@@ -516,11 +543,18 @@ __global__ void cp_gather_indexer_k_quant_cache_kernel(
     const int num_tokens,            // number of tokens
     const int quant_block_size       // quantization block size
 ) {
+  // 说明：一个线程处理一个 token 的 VEC_SIZE 个连续的维度，每个维度占用 1 字节
   constexpr int VEC_SIZE = sizeof(float4) / sizeof(char);
+  // blockIdx.x 表示第几组 token，每组 BLOCK_Y_SIZE 个 token；
+  // blockDim.y = BLOCK_Y_SIZE，对应 token 维度，threadIdx.y 维度表示当前 block 内第几个 token
   const int token_idx = blockIdx.x * blockDim.y + threadIdx.y;
+  // 说明：blockIdx.y 表示 head_dim 的第几组维度，每组 8（blockDim.x） * 16 (VEC_SIZE) = 128 个维度；
+  // 每个线程处理 VEC_SIZE 个维度，8 * VEC_SIZE 分为 8 组，每个线程对应一组，threadIdx.x 表示在 8 组中的第几个
   const int head_idx = (blockIdx.y * blockDim.x + threadIdx.x) * VEC_SIZE;
+  // 说明：__shared__ 变量在同一个 block 内的所有线程共享
   // Find batch index within a block
   __shared__ int batch_idx[BLOCK_Y_SIZE];
+  // 说明：计算当前线程负责处理的 token 在整个 batch 中属于哪个序列
   for (int iter = 0; iter < cuda_utils::ceil_div(batch_size, int(blockDim.x));
        iter++) {
     int tid = iter * blockDim.x + threadIdx.x;
@@ -540,20 +574,24 @@ __global__ void cp_gather_indexer_k_quant_cache_kernel(
   if (head_idx >= head_dim || token_idx >= num_tokens) {
     return;
   }
+  // 说明：计算当前 token 在其所属序列中的位置
   const int inbatch_seq_idx = token_idx - cu_seq_lens[batch_idx[threadIdx.y]];
   const int block_idx = block_table[batch_idx[threadIdx.y] * num_blocks +
                                     inbatch_seq_idx / cache_block_size];
   const int64_t src_block_offset = block_idx * block_stride;
+  // 说明：block 内前面 token 的完整维度 + 当前 token 的 head_idx 偏移量
   const int64_t cache_inblock_offset =
       (inbatch_seq_idx % cache_block_size) * head_dim + head_idx;
   const int64_t src_inblock_offset = src_block_offset + cache_inblock_offset;
   const int64_t dst_inblock_offset = token_idx * token_stride + head_idx;
 
+  // 说明：一次赋值 16 个字节
   reinterpret_cast<float4*>(dst_k)[dst_inblock_offset / VEC_SIZE] =
       reinterpret_cast<const float4*>(kv_cache)[src_inblock_offset / VEC_SIZE];
   ;
   if (threadIdx.x == 0) {
     const int64_t src_scale_offset =
+        // 说明：block 初始位置的 offset + 完整量化值部分的大小（fp8 量化）+ 量化值组数 * 量化值大小（float，4 字节）
         src_block_offset + cache_block_size * head_dim +
         cache_inblock_offset * 4 / quant_block_size;
     reinterpret_cast<float*>(dst_scale)[dst_inblock_offset / quant_block_size] =
@@ -1270,6 +1308,7 @@ void cp_gather_and_upconvert_fp8_kv_cache(
       dst_entry_stride);
 }
 
+// 已阅
 // Macro to dispatch the kernel based on the data type.
 #define CALL_INDEXER_K_QUANT_AND_CACHE(KV_T, CACHE_T, KV_DTYPE)         \
   vllm::indexer_k_quant_and_cache_kernel<KV_T, CACHE_T, KV_DTYPE>       \
@@ -1279,6 +1318,7 @@ void cp_gather_and_upconvert_fp8_kv_cache(
           slot_mapping.data_ptr<int64_t>(), head_dim, quant_block_size, \
           cache_block_size, cache_stride, use_ue8m0);
 
+// 已阅
 void indexer_k_quant_and_cache(
     torch::Tensor& k,             // [num_tokens, head_dim]
     torch::Tensor& kv_cache,      // [num_blocks, block_size, cache_stride]
@@ -1287,6 +1327,7 @@ void indexer_k_quant_and_cache(
     const std::string& scale_fmt) {
   int num_tokens = k.size(0);
   int head_dim = k.size(1);
+  // 说明：一个 block 包含多少个 token 的 kv_cache
   int cache_block_size = kv_cache.size(1);
   int cache_stride = kv_cache.size(2);
   bool use_ue8m0 = scale_fmt == "ue8m0";
@@ -1299,16 +1340,22 @@ void indexer_k_quant_and_cache(
               "head_dim must be divisible by quant_block_size");
 
   constexpr int vec_size = 4;
+  // 说明：一个 block 处理一个 token 中的 quant_block_size * vec_size 个维度
   dim3 grid(num_tokens, (head_dim + quant_block_size * vec_size - 1) /
                             (quant_block_size * vec_size));
   dim3 block(32, vec_size);
   const at::cuda::OptionalCUDAGuard device_guard(device_of(k));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
+  // 说明：kv_cache 的 dtype 是 fp8_e4m3，所以 cache_t 是 uint8_t；
+  // 实际存储的数据是 fp8 格式的，只是用 uint8_t 来存储，参考 scaled_vec_conversion<uint8_t, xxx>
   DISPATCH_BY_KV_CACHE_DTYPE(k.dtype(), "fp8_e4m3",
                              CALL_INDEXER_K_QUANT_AND_CACHE);
 }
 
+// 说明：gridDim.x = (num_tokens + BLOCK_Y_SIZE - 1) / BLOCK_Y_SIZE，一个 block 处理 BLOCK_Y_SIZE 个 token；
+// gridDim.y = (head_dim + 8 * vec_size - 1) / (8 * vec_size)，一个 block 处理 head_dim 中的 8 * vec_size 个维度，实际值为 8 * 16 = 128；
+// blockDim.x = 8，blockDim.y = BLOCK_Y_SIZE；
 // Macro to dispatch the kernel based on the data amount.
 #define CALL_CP_GATHER_INDEXER_K_QUANT_CACHE(BLOCK_Y_SIZE)                  \
   vllm::cp_gather_indexer_k_quant_cache_kernel<BLOCK_Y_SIZE>                \
@@ -1326,6 +1373,7 @@ void indexer_k_quant_and_cache(
 void cp_gather_indexer_k_quant_cache(
     const torch::Tensor& kv_cache,  // [num_blocks, block_size, cache_stride]
     torch::Tensor& dst_k,           // [num_tokens, head_dim]
+    // 说明：quant_block_size 个维度对应一个 scale，每个 scale 占 4 个字节
     torch::Tensor& dst_scale,  // [num_tokens, head_dim / quant_block_size * 4]
     const torch::Tensor& block_table,  // [batch_size, num_blocks]
     const torch::Tensor& cu_seq_lens   // [batch_size + 1]

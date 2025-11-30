@@ -41,6 +41,7 @@ pynvml = import_pynvml()
 torch.backends.cuda.enable_cudnn_sdp(False)
 
 
+# 已阅
 @cache
 def _get_backend_priorities(
     use_mla: bool,
@@ -271,6 +272,7 @@ class CudaPlatformBase(Platform):
         torch.cuda.reset_peak_memory_stats(device)
         return torch.cuda.max_memory_allocated(device)
 
+    # 已阅
     @classmethod
     def get_valid_backends(
         cls,
@@ -302,6 +304,7 @@ class CudaPlatformBase(Platform):
 
         return valid_backends_priorities, invalid_reasons
 
+    # 已阅
     @classmethod
     def get_attn_backend_cls(
         cls,

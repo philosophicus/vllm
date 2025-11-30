@@ -53,5 +53,6 @@ class ModelArchitectureConfig:
     is_deepseek_mla: bool
     """Whether the model is a DeepSeek MLA model."""
 
+    # 说明：具体实现见 ModelArchConfigConvertorBase.derived_max_model_len_and_key 方法；
     derived_max_model_len_and_key: tuple[float, str | None]
     """Derived maximum model length and key from the hf config."""

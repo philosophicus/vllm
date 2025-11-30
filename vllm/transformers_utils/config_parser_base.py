@@ -7,6 +7,7 @@ from pathlib import Path
 from transformers import PretrainedConfig
 
 
+# 已阅
 class ConfigParserBase(ABC):
     @abstractmethod
     def parse(

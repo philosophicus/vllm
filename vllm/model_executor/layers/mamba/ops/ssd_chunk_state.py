@@ -13,6 +13,9 @@ from vllm.triton_utils import tl, triton
 from .mamba_ssm import softplus
 
 
+# 已阅
+# 说明：计算 dt_out 和 dA_cumsum 的 kernel，
+# dt_out 是经过 bias 和 softplus 处理后的 dt，dA_cumsum 是 dt * A 的前缀和（dt 是处理后的）
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK_SIZE_H": 2}),
@@ -22,15 +25,20 @@ from .mamba_ssm import softplus
         triton.Config({"BLOCK_SIZE_H": 32}),
         triton.Config({"BLOCK_SIZE_H": 64}),
     ],
+    # 说明：缓存调优结果的 cache key
     key=["chunk_size", "nheads"],
 )
 @triton.jit
 def _chunk_cumsum_fwd_kernel(
     # Pointers to matrices
+    # 说明：dt 的 shape 是 (seqlen, nheads)
     dt_ptr,
     A_ptr,
+    # 说明：dt_bias 的 shape 是 (nheads,)
     dt_bias_ptr,
+    # 说明：dt_out 的 shape 是 (nheads, nchunks, chunk_size)
     dt_out_ptr,
+    # 说明：dA_cumsum 的 shape 是 (nheads, nchunks, chunk_size)
     dA_cumsum_ptr,
     cu_chunk_seqlens_ptr,
     # Matrix dimension
@@ -56,9 +64,11 @@ def _chunk_cumsum_fwd_kernel(
     BLOCK_SIZE_H: tl.constexpr,
     BLOCK_SIZE_CHUNK: tl.constexpr,
 ):
+    # 说明：chunk 索引
     # if dt is long, may cause problems, so use 64 bit
     # https://github.com/triton-lang/triton/issues/1058
     pid_c = tl.program_id(axis=0).to(tl.int64)
+    # 说明：head 索引，每个 block 处理一个 chunk 内 BLOCK_SIZE_H 个 head 的数据
     pid_h = tl.program_id(axis=1)
 
     chunk_seqlen_start = tl.load(cu_chunk_seqlens_ptr + pid_c)
@@ -95,7 +105,9 @@ def _chunk_cumsum_fwd_kernel(
     if DT_SOFTPLUS:
         dt = tl.where(dt <= 20.0, softplus(dt), dt)
 
+    # 说明：保证 dt 非负
     dt = tl.clamp(dt, dt_min, dt_max)
+    # 说明：经过了 bias 和 softplus 处理后的 dt，再重新根据 mask 获取有效值
     dt = tl.where(
         (offs_h[:, None] < nheads) & (offs_c[None, :] < chunk_size_limit), dt, 0.0
     )
@@ -114,10 +126,15 @@ def _chunk_cumsum_fwd_kernel(
     )
 
 
+# 已阅
+# 说明：计算 Right Factors 的 kernel，输入是 x、b、dt 和 dA_cumsum，输出是 states（每个 chunk 的最终状态）
 @triton.autotune(
     configs=[
         triton.Config(
             {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 64},
+            # 说明：num_stages 越大，流水线越充分，内存延迟隐藏得越好，理论性能越高；
+            # 但过大的 num_stages 会占用更多的共享内存（SMEM）、寄存器，
+            # 导致每个 block 能启动的线程数减少（occupancy 降低），反而可能性能下降。
             num_stages=3,
             num_warps=8,
         ),
@@ -167,10 +184,15 @@ def _chunk_cumsum_fwd_kernel(
 @triton.jit
 def _chunk_state_fwd_kernel(
     # Pointers to matrices
+    # 说明：x 的 shape 是 (seqlen, nheads, headdim)
     x_ptr,
+    # 说明：b 的 shape 是 (seqlen, ngroups, dstate)
     b_ptr,
+    # 说明：states 的 shape 是 (nchunks, nheads, headdim, dstate)
     states_ptr,
+    # 说明：dt 的 shape 是 (nheads, nchunks, chunk_size)
     dt_ptr,
+    # 说明：dA_cumsum 的 shape 是 (nheads, nchunks, chunk_size)
     dA_cumsum_ptr,
     cu_chunk_seqlens_ptr,
     # Matrix dimensions
@@ -201,15 +223,23 @@ def _chunk_state_fwd_kernel(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
 ):
+    # 说明：处理一个 chunk、一个 head 内的 BLOCK_SIZE_M 个 dim 和 BLOCK_SIZE_N 个 state
+    # 说明：pid_c 的 chunk 索引
     pid_c = tl.program_id(axis=1).to(tl.int64)
+    # 说明：pid_h 是 head 索引
     pid_h = tl.program_id(axis=2)
     num_pid_n = tl.cdiv(dstate, BLOCK_SIZE_N)
+    # 说明：pid_m 是 dim 索引，对应 BLOCK_SIZE_M 个 dim
     pid_m = tl.program_id(axis=0) // num_pid_n
+    # 说明：pid_n 是 state 索引，对应 BLOCK_SIZE_N 个 state
     pid_n = tl.program_id(axis=0) % num_pid_n
     chunk_seqlen_start = tl.load(cu_chunk_seqlens_ptr + pid_c)
     chunk_seqlen_end = tl.load(cu_chunk_seqlens_ptr + pid_c + 1)
     b_ptr += (
         chunk_seqlen_start * stride_b_seqlen
+        # 说明：这里 stride_b_head 应该是 stride_b_group，即 ngroups 维度的 stride；
+        # nheads 和 ngroups 都是经过 TP 切分的，所以 nheads_ngroups_ratio 是不变的，表示一个 group 内有多少 heads；
+        # pid_h 是 head 索引，pid_h // nheads_ngroups_ratio 就是 group 索引，乘以 stride_b_head 就是跳到对应 group 的位置
         + (pid_h // nheads_ngroups_ratio) * stride_b_head
     )
     x_ptr += chunk_seqlen_start * stride_x_seqlen + pid_h * stride_x_head
@@ -218,14 +248,18 @@ def _chunk_state_fwd_kernel(
 
     offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    # 说明：chunk_size 维度
     offs_k = tl.arange(0, BLOCK_SIZE_K)
+    # 说明：x_ptrs 的 shape 是 (BLOCK_SIZE_M, BLOCK_SIZE_K)
     x_ptrs = x_ptr + (
         offs_m[:, None] * stride_x_hdim + offs_k[None, :] * stride_x_seqlen
     )
+    # 说明：b_ptrs 的 shape 是 (BLOCK_SIZE_K, BLOCK_SIZE_N)
     b_ptrs = b_ptr + (
         offs_n[None, :] * stride_b_dstate + offs_k[:, None] * stride_b_seqlen
     )
     dt_ptrs = dt_ptr + offs_k * stride_dt_csize
+    # 说明：chunk 内最后一个位置的 dA_cumsum
     dA_cs_last = tl.load(dA_cumsum_ptr + (chunk_size - 1) * stride_dA_cs_csize).to(
         tl.float32
     )
@@ -235,6 +269,9 @@ def _chunk_state_fwd_kernel(
 
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
     for k in range(0, chunk_size_limit, BLOCK_SIZE_K):
+        # 说明：k 是 chunk 内的偏移，chunk_size_limit 是 chunk 内实际的序列长度，BLOCK_SIZE_K 是每次处理的 chunk 内的 token 数量；
+        # chunk_size_limit - k 是当前偏移下剩余的 token 数量，如果小于 BLOCK_SIZE_K，就只处理剩余的 token；
+        # 以下指针在循环尾部都会增加 BLOCK_SIZE_K * stride，所以计算 mask 时只需考虑剩余 token 数
         x = tl.load(
             x_ptrs,
             mask=(offs_m[:, None] < hdim) & (offs_k[None, :] < chunk_size_limit - k),
@@ -251,6 +288,10 @@ def _chunk_state_fwd_kernel(
         dt_k = tl.load(dt_ptrs, mask=offs_k < chunk_size_limit - k, other=0.0).to(
             tl.float32
         )
+        # 说明：以 Mamba2 中矩阵分块为例，right factors or B-block-factors 形如
+        # [B_0^\top A_{2:0}, B_1^\top A_{2:1}, B_2^\top A_{2:2}]，这里 scale 计算的就是
+        # [A_{2:0}, A_{2:1}, A_{2:2}] 部分
+        # 理解：乘上的 dt_k 是属于对 B 做 euler's discretization (一阶近似，delta * B) 中的 delta
         scale = tl.exp(dA_cs_last - dA_cs_k) * dt_k
         b *= scale[:, None]
         b = b.to(x_ptr.dtype.element_ty)
@@ -261,6 +302,7 @@ def _chunk_state_fwd_kernel(
         dt_ptrs += BLOCK_SIZE_K * stride_dt_csize
         dA_cumsum_ptrs += BLOCK_SIZE_K * stride_dA_cs_csize
 
+    # 说明：final state per chunk supposing that the initial state (to the chunk) is 0 (摘自 Mamba-2 论文 Right Factors. 部分)
     states = acc.to(states_ptr.dtype.element_ty)
 
     states_ptr += pid_c * stride_states_chunk + pid_h * stride_states_head
@@ -505,6 +547,9 @@ def _chunk_state_varlen_kernel(
     tl.store(states_ptrs, states, mask=c_mask)
 
 
+# 已阅
+# 说明：计算 dt_out 和 dA_cumsum 的 kernel，
+# dt_out 是经过 bias 和 softplus 处理后的 dt，dA_cumsum 是 dt * A 的前缀和（dt 是处理后的）
 def _chunk_cumsum_fwd(
     dt,
     A,
@@ -525,6 +570,7 @@ def _chunk_cumsum_fwd(
     dA_cumsum = torch.empty(
         nheads, nchunks, chunk_size, device=dt.device, dtype=torch.float32
     )
+    # 说明：grid 设计为 (nchunks, nheads // BLOCK_SIZE_H)，每个 block 处理一个 chunk 内 BLOCK_SIZE_H 个 head 的数据
     grid_chunk_cs = lambda META: (nchunks, triton.cdiv(nheads, META["BLOCK_SIZE_H"]))
     with torch.cuda.device(dt.device.index):
         _chunk_cumsum_fwd_kernel[grid_chunk_cs](
@@ -556,6 +602,8 @@ def _chunk_cumsum_fwd(
     return dA_cumsum, dt_out
 
 
+# 已阅
+# 说明：计算 Right Factors 的 kernel，输入是 x、b、dt 和 dA_cumsum，输出是 states（每个 chunk 的最终状态）
 def _chunk_state_fwd(
     B, x, dt, dA_cumsum, cu_chunk_seqlens, states=None, states_in_fp32=True
 ):

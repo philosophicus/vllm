@@ -8,6 +8,8 @@ from vllm.utils.platform_utils import is_pin_memory_available
 from vllm.utils.torch_utils import make_tensor_with_pad
 
 
+# 已阅
+# 说明：对 logits 应用 presence、frequency、repetition penalties
 def apply_all_penalties(
     logits: torch.Tensor,
     prompt_token_ids: torch.Tensor,
@@ -22,6 +24,7 @@ def apply_all_penalties(
     _, vocab_size = logits.shape
     output_tokens_t = _convert_to_tensors(output_token_ids, vocab_size, logits.device)
 
+    # 说明：scatter 指 get_token_bin_counts_and_mask 方法中的 scatter_add_
     # In the async scheduling case, rows that won't have penalties applied may contain
     # -1 placeholder token ids. We must replace these with valid token ids so that the
     # scatter done in apply_penalties is valid.
@@ -39,6 +42,8 @@ def apply_all_penalties(
     )
 
 
+# 已阅
+# 说明：在 cpu 上创建二维 torch.Tensor，再转移到指定 device 上
 def _convert_to_tensors(
     output_token_ids: list[list[int]], vocab_size: int, device: torch.device
 ) -> torch.Tensor:

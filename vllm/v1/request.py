@@ -114,6 +114,7 @@ class Request:
         else:
             raise ValueError("sampling_params and pooling_params can't both be unset")
 
+        # 问题：最后一个 token 也是 prompt token 吗？
         self.prompt_token_ids = prompt_token_ids
         self.prompt_embeds = prompt_embeds
         self.num_prompt_tokens = length_from_prompt_token_ids_or_embeds(
@@ -297,6 +298,7 @@ class RequestStatus(enum.IntEnum):
     """Status of a request."""
 
     WAITING = enum.auto()
+    # 说明：等待 FSM（finite state machine）准备就绪以进行结构化输出请求的解码
     WAITING_FOR_FSM = enum.auto()
     WAITING_FOR_REMOTE_KVS = enum.auto()
     WAITING_FOR_STREAMING_REQ = enum.auto()

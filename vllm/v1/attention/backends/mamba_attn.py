@@ -34,12 +34,19 @@ class BaseMambaAttentionMetadata:
     num_decode_tokens: int
     num_reqs: int
 
+    # 说明：_p 代表这些字段是针对 prefill 请求的
     # The following tensors only contain prefill requests and will be None if
     # the batch has no prefill request.
     has_initial_states_p: torch.Tensor | None
     query_start_loc_p: torch.Tensor | None
     num_computed_tokens_p: torch.Tensor | None
 
+    # 说明：每个请求对应的一组 block table indices，用于获取 conv_state 或 ssm_state；
+    # 所以这里 block table indices 被统称为 state_indices_tensor，对应的形参名为 conv_state_indices 或 state_batch_indices；
+    # 对于 conv_state 来说，可以从 conv_state 中获取 state_len 个 token 的 conv state；
+    # 对于 ssm_state 来说，可以从 ssm_state 中获取最新 token 的 (P，N) 维 ssm state；
+    # 说明：none 或 align 模式下，每个请求只保存一个 block 的状态，所以 state_indices_tensor 的 shape 是 [num_reqs,]；
+    # all 模式下，每个请求保存多个 block 的状态，所以 state_indices_tensor 的 shape 是 [num_reqs, num_blocks]
     state_indices_tensor: torch.Tensor
 
     # The following tensors are only used for prefix caching in all mode and
@@ -76,6 +83,7 @@ class BaseMambaAttentionMetadataBuilder(AttentionMetadataBuilder[M], abc.ABC):
 
         assert isinstance(kv_cache_spec, MambaSpec)
         self.compilation_config = vllm_config.compilation_config
+        # 说明：最大 decode 数量
         self.decode_cudagraph_max_bs = self.vllm_config.scheduler_config.max_num_seqs
         if self.compilation_config.max_cudagraph_capture_size is not None:
             self.decode_cudagraph_max_bs = min(
@@ -142,6 +150,7 @@ class BaseMambaAttentionMetadataBuilder(AttentionMetadataBuilder[M], abc.ABC):
         """
         return self._compute_common_metadata(common_attn_metadata)
 
+    # 已阅
     def _compute_prefix_caching_block_indices(
         self,
         common_attn_metadata: CommonAttentionMetadata,
@@ -209,6 +218,7 @@ class BaseMambaAttentionMetadataBuilder(AttentionMetadataBuilder[M], abc.ABC):
             # Return a tensor of shape (#requests, #max blocks)
             state_indices_tensor = common_attn_metadata.block_table_tensor
             # Additional cache-related varaiables:
+            # 说明：MambaSpec 的 block_size 来自 vllm_config.cache_config.mamba_block_size
             mamba_block_size = self.kv_cache_spec.block_size
             (
                 block_idx_last_computed_token,
@@ -266,9 +276,16 @@ class BaseMambaAttentionMetadataBuilder(AttentionMetadataBuilder[M], abc.ABC):
                 state_indices_tensor, non_blocking=True
             )
             state_indices_tensor = self.state_indices_tensor[:num_decode_tokens]
+            # 说明：从 [num_decodes, num_decode_tokens] 被填充为 PAD_SLOT_ID
+            # 理解：num_decodes 是实际的 decode 请求数量，num_decode_tokens 是理论上最大的 decode 请求数量（decode 长度为 1），
+            # 所以将 [num_decodes, num_decode_tokens] 的部分填充为 PAD_SLOT_ID，表示这些位置没有实际的 decode 请求，
+            # 可以被安全地访问但不会有实际的计算意义；目的是为了适配 full CUDA graph 模式下 block table 的访问，
+            # 避免访问越界，同时也不需要特殊处理这些位置，因为它们的 block index 是 PAD_SLOT_ID，不会对应到实际的 cache 状态？
+            # 说明：关于填充，对于 full CUDA graph mode，query_start_loc_np 的末尾要填充长度为 0 的序列
             state_indices_tensor[num_decodes:] = PAD_SLOT_ID
 
             if self.vllm_config.cache_config.mamba_cache_mode == "all":
+                # 说明：每个 decode 请求的 last scheduled token 所在的 block index
                 self.block_idx_last_scheduled_token[:num_decodes].copy_(
                     block_idx_last_scheduled_token, non_blocking=True
                 )
@@ -276,6 +293,7 @@ class BaseMambaAttentionMetadataBuilder(AttentionMetadataBuilder[M], abc.ABC):
                     :num_decode_tokens
                 ]
 
+                # 说明：每个 decode 请求的 last computed token 所在的 block index
                 self.block_idx_last_computed_token[:num_decodes].copy_(
                     block_idx_last_computed_token, non_blocking=True
                 )
@@ -302,6 +320,8 @@ class BaseMambaAttentionMetadataBuilder(AttentionMetadataBuilder[M], abc.ABC):
             token_chunk_offset_ptr=token_chunk_offset_ptr,
         )
 
+    # 已阅
+    # 说明：更新 state_indices_tensor 字段，保存每个请求对应的一组 block table tensor
     def update_block_table(
         self,
         metadata: M,

@@ -42,6 +42,7 @@ USE_SCHED_YIELD = (sys.version_info[:3] >= (3, 11, 1)) or (
 )
 
 
+# 已阅
 def sched_yield():
     if USE_SCHED_YIELD:
         os.sched_yield()
@@ -91,6 +92,8 @@ def split_tensor_along_last_dim(
     return tensor_list
 
 
+# 已阅
+# 说明：返回 [start_layer, end_layer)，表示当前 pp_rank 负责的层的范围
 def get_pp_indices(
     num_hidden_layers: int, pp_rank: int, pp_size: int
 ) -> tuple[int, int]:
@@ -107,6 +110,7 @@ def get_pp_indices(
     because they contain the input and output embeddings respectively and we
     are attempting to reduce maximum memory consumption across partitions.
     """
+    # 说明：VLLM_PP_LAYER_PARTITION 的内容是每个 partition 的层数，逗号分隔
     partition_list_str = envs.VLLM_PP_LAYER_PARTITION
     if partition_list_str is not None:
         try:
@@ -125,6 +129,7 @@ def get_pp_indices(
 
         if remaining_layers := num_hidden_layers % pp_size:
             for i in range(2, remaining_layers + 2):
+                # 说明：从倒数第二个 partition 开始，依次向前分配剩余的层数
                 partitions[-i] += 1
             logger.info(
                 "Hidden layers were unevenly partitioned: [%s]. "
@@ -139,6 +144,7 @@ def get_pp_indices(
     return (start_layer, end_layer)
 
 
+# 已阅
 @dataclasses.dataclass
 class StatelessProcessGroup:
     """A dataclass to hold a metadata store, and the rank, world_size of the
@@ -155,8 +161,10 @@ class StatelessProcessGroup:
 
     data_expiration_seconds: int = 3600  # 1 hour
 
+    # 说明：发给每个 dst rank 的 counter
     # dst rank -> counter
     send_dst_counter: dict[int, int] = dataclasses.field(default_factory=dict)
+    # 说明：从每个 src rank 接收的 counter
     # src rank -> counter
     recv_src_counter: dict[int, int] = dataclasses.field(default_factory=dict)
     broadcast_send_counter: int = 0
@@ -198,6 +206,8 @@ class StatelessProcessGroup:
         self.recv_src_counter[src] += 1
         return obj
 
+    # 说明：rank == src 时广播数据；rank != src 时从 src 接收数据；
+    # rank 是本地 rank
     def broadcast_obj(self, obj: Any | None, src: int) -> Any:
         """Broadcast an object from a source rank to all other ranks.
         It does not clean up after all ranks have received the object.
@@ -228,6 +238,7 @@ class StatelessProcessGroup:
                 gathered_objs.append(recv_obj)
         return gathered_objs
 
+    # 说明：timeout 是两个阶段独立计算的超时时间，即对于 rank0 方法总耗时最多是 2 * timeout 秒
     def barrier(self, timeout: float = 30.0):
         """A robust barrier to synchronize all ranks.
 
@@ -362,6 +373,7 @@ class StatelessProcessGroup:
             except Exception:
                 logger.debug("Error deleting key: %s", f"departure_{barrier_id}_{i}")
 
+    # 已阅
     @staticmethod
     def create(
         host: str,
@@ -404,6 +416,10 @@ class StatelessProcessGroup:
             world_size=world_size,
             is_master=launch_server,
             timeout=timedelta(seconds=store_timeout),
+            # 说明：libuv 是跨平台的异步 IO 库，支持高并发
+            # use_libuv=False 使用同步阻塞 IO 模型
+            # 说明：pull request 的内容是 "libuv TCPStore backend does not support
+            # initialization with a listen fd"
             use_libuv=False,  # for now: github.com/pytorch/pytorch/pull/150215
             master_listen_fd=listen_fd,
         )

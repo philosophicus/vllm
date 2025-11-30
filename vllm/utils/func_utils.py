@@ -120,6 +120,8 @@ def deprecate_kwargs(
     return wrapper
 
 
+# 已阅
+# 说明：检查某个函数是否支持某个关键字参数
 @lru_cache
 def supports_kw(
     callable: Callable[..., object],
@@ -154,6 +156,7 @@ def supports_kw(
             and is_sig_param
             and param_val.kind != inspect.Parameter.KEYWORD_ONLY
         ):
+            # 说明：要求必须是 keyword-only 参数
             return False
         if (requires_kw_only and param_val.kind == inspect.Parameter.KEYWORD_ONLY) or (
             not requires_kw_only and is_sig_param

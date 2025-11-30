@@ -17,11 +17,13 @@ from vllm.v1.worker.ubatch_utils import (
 logger = init_logger(__name__)
 
 
+# 已阅
 def _get_device_and_group(parallel_config: ParallelConfig):
     # Use the actual device assigned to the DP group, not just the device type
     device = get_dp_group().device
     group = get_dp_group().device_group
 
+    # 说明：启用 async scheduling 时，禁止使用 NCCL 进行 DP 同步
     # Transferring this tensor from GPU to CPU will introduce a GPU sync
     # point that could adversely affect performance of vllm with asynch
     # scheduling. This environment variable exists to quickly disable
@@ -35,6 +37,7 @@ def _get_device_and_group(parallel_config: ParallelConfig):
     return device, group
 
 
+# 已阅
 def _run_ar(
     should_ubatch: bool,
     should_dp_pad: bool,
@@ -56,6 +59,8 @@ def _run_ar(
     return tensor
 
 
+# 已阅
+# 说明：根据 all reduce 结果确定是否做 ubatch
 def _post_process_ubatch(tensor: torch.Tensor, num_ubatches: int) -> bool:
     orig_num_tokens_tensor = tensor[0, :]
     padded_num_tokens_tensor = tensor[1, :]
@@ -76,6 +81,7 @@ def _post_process_ubatch(tensor: torch.Tensor, num_ubatches: int) -> bool:
     return should_ubatch
 
 
+# 已阅
 def _post_process_dp_padding(tensor: torch.Tensor, should_dp_pad: bool) -> torch.Tensor:
     num_tokens_across_dp = tensor[1, :]
     if should_dp_pad:
@@ -83,6 +89,7 @@ def _post_process_dp_padding(tensor: torch.Tensor, should_dp_pad: bool) -> torch
         # of tokens
         max_num_tokens = int(num_tokens_across_dp.max().item())
         return torch.tensor(
+            # 说明：将每个 DP rank 的 token 数量都设置为最大值
             [max_num_tokens] * len(num_tokens_across_dp),
             device="cpu",
             dtype=torch.int32,
@@ -91,6 +98,7 @@ def _post_process_dp_padding(tensor: torch.Tensor, should_dp_pad: bool) -> torch
         return num_tokens_across_dp.cpu()
 
 
+# 已阅
 def _post_process_cudagraph_mode(tensor: torch.Tensor) -> int:
     """
     Synchronize cudagraph_mode across DP ranks by taking the minimum.
@@ -100,6 +108,8 @@ def _post_process_cudagraph_mode(tensor: torch.Tensor) -> int:
     return int(tensor[4, :].min().item())
 
 
+# 已阅
+# 说明：关注方法注释
 def _synchronize_dp_ranks(
     num_tokens_unpadded: int,
     num_tokens_padded: int,
@@ -170,6 +180,9 @@ def _synchronize_dp_ranks(
     return should_ubatch, num_tokens_after_padding, synced_cudagraph_mode
 
 
+# 已阅
+# 说明：padding 指的是所有 DP rank 都对齐到相同的 token 数量
+# 理解：这样做的目的是为了 cudagraph 的一致性
 def coordinate_batch_across_dp(
     num_tokens_unpadded: int,
     allow_microbatching: bool,

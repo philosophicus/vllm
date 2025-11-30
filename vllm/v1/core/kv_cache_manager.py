@@ -18,6 +18,7 @@ from vllm.v1.request import Request
 logger = init_logger(__name__)
 
 
+# 已阅
 @dataclass
 class KVCacheBlocks:
     """
@@ -45,6 +46,7 @@ class KVCacheBlocks:
         """Adds two KVCacheBlocks instances."""
         return KVCacheBlocks(
             tuple(
+                # 说明：对应 KV cache group 维度的拼接，拼接后仍然按照 KV cache group 进行分组
                 list(itertools.chain(blk1, blk2))
                 for blk1, blk2 in zip(self.blocks, other.blocks)
             )
@@ -96,6 +98,11 @@ class KVCacheManager:
         self,
         kv_cache_config: KVCacheConfig,
         max_model_len: int,
+        # 说明：从 scheduler 传入的参数，值为 
+        # vllm_config.cache_config.block_size
+        #   * vllm_config.parallel_config.decode_context_parallel_size
+        #   * vllm_config.parallel_config.prefill_context_parallel_size
+        # 表示能支持一轮 pcp 和 dcp 的整体 block_size
         hash_block_size: int,
         enable_caching: bool = True,
         use_eagle: bool = False,
@@ -161,6 +168,7 @@ class KVCacheManager:
         self.prefix_cache_stats = PrefixCacheStats()
         return stats
 
+    # 已阅
     def get_computed_blocks(self, request: Request) -> tuple[KVCacheBlocks, int]:
         """Get the computed (cached) blocks for the request.
         Note that the computed blocks must be full.
@@ -187,6 +195,8 @@ class KVCacheManager:
         # num_computed_tokens to be block-size aligned. Removing this limitation
         # could slightly improve performance in the future.
         max_cache_hit_length = request.num_tokens - 1
+        # 补充：即 cached_blocks 和 num_new_cached_tokens = len(cached_blocks[0]) * block_size
+        # cached_blocks 中的 block 可能此时存在于 free queue 中
         computed_blocks, num_new_computed_tokens = (
             self.coordinator.find_longest_cache_hit(
                 request.block_hashes, max_cache_hit_length
@@ -203,12 +213,18 @@ class KVCacheManager:
 
         return self.create_kv_cache_blocks(computed_blocks), num_new_computed_tokens
 
+    # 说明：
+    # 传入 new_computed_blocks 是因为刚计算完还没有保存到 coordinator 中，需要在这里完成保存；
+    # 只有新 request（非 running）才会传入 new_computed_blocks 和 num_new_computed_tokens，
+    # 因为这两个参数与 prefix caching 有关，而只有新 request 才会做 prefix caching
     def allocate_slots(
         self,
         request: Request,
+        # 说明：包含本轮待验证的 draft tokens
         num_new_tokens: int,
         num_new_computed_tokens: int = 0,
         new_computed_blocks: KVCacheBlocks | None = None,
+        # 说明：预留的 speculative token 位置
         num_lookahead_tokens: int = 0,
         num_external_computed_tokens: int = 0,
         delay_cache_blocks: bool = False,
@@ -333,6 +349,9 @@ class KVCacheManager:
             num_tokens_main_model=num_tokens_main_model,
         )
 
+        # 问题：get_num_blocks_to_allocate 是所有 kv cache group 的待分配 block 数量之和，
+        # 而每个 kv cache group 的 block_size 可能不同；
+        # 所有 kv cache group 共用同一个 block pool，block pool 的
         if num_blocks_to_allocate > self.block_pool.get_num_free_blocks():
             # Cannot allocate new blocks
             return None
@@ -341,6 +360,8 @@ class KVCacheManager:
             new_computed_block_list is not self.empty_kv_cache_blocks.blocks
             or num_external_computed_tokens > 0
         ):
+            # 说明：为 new_computed_blocks 或者 external_computed_tokens 分配 block；
+            # 前面的检查逻辑确保了这里可以成功分配
             # Append the new computed blocks to the request blocks until now to
             # avoid the case where the new blocks cannot be allocated.
             self.coordinator.allocate_new_computed_blocks(
@@ -350,15 +371,19 @@ class KVCacheManager:
                 num_external_computed_tokens=num_external_computed_tokens,
             )
 
+        # 说明：prefix caching 相关的 new_computed_blocks 和 external computed tokens 已经完成分配，
+        # 现在分配新的 blocks
         new_blocks = self.coordinator.allocate_new_blocks(
             request.request_id,
             num_tokens_need_slot,
             num_tokens_main_model,
+            # 说明：CrossAttentionManager 只使用此参数
             num_encoder_tokens,
         )
 
         # P/D: delay caching blocks if we have to recv from
         # remote. Update state for locally cached blocks.
+        # 说明：如果是 P/D 场景且是接收远程 KV，则不缓存新分配的 blocks
         if not self.enable_caching or delay_cache_blocks:
             return self.create_kv_cache_blocks(new_blocks)
 

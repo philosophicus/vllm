@@ -14,6 +14,11 @@
 #endif
 
 #ifndef USE_ROCM
+    // 说明：cub 库提供了高性能的并行算法实现，如并行扫描（scan）和块加载/存储（block load/store）等
+    // https://nvidia.github.io/cccl/unstable/cub/api_docs/thread_level.html
+    // https://nvidia.github.io/cccl/unstable/cub/api_docs/warp_wide.html
+    // https://nvidia.github.io/cccl/unstable/cub/api_docs/block_wide.html
+    // https://nvidia.github.io/cccl/unstable/cub/api_docs/device_wide.html
     #include <cub/block/block_load.cuh>
     #include <cub/block/block_store.cuh>
     #include <cub/block/block_scan.cuh>
@@ -36,12 +41,17 @@ struct Selective_Scan_fwd_kernel_traits {
     static constexpr int kNThreads = kNThreads_;
     // Setting MinBlocksPerMP to be 3 (instead of 2) for 128 threads improves occupancy.
     static constexpr int kMinBlocks = kNThreads < 128 ? 5 : 3;
+    // 说明：每个线程处理 kNItems 个 token
     static constexpr int kNItems = kNItems_;
+    // 理解：kNRows 相当于 Mamba2 论文中的 P (head dimension)，每个线程处理 kNItems 个 token，每个 token 包含 kNRows 个 dimension
     static constexpr int kNRows = kNRows_;
     static constexpr int kNBytes = sizeof(input_t);
     static_assert(kNBytes == 2 || kNBytes == 4);
+    // 说明：kNBytes 为 4 字节时，输入类型为 float，此时每次加载 4 个元素；
+    // kNBytes 为 2 字节时，输入类型为 half 或 bfloat16，此时每次加载 8 个元素。
     static constexpr int kNElts = kNBytes == 4 ? 4 : constexpr_min(8, kNItems);
     static_assert(kNItems % kNElts == 0);
+    // 说明：每个线程需要进行的加载次数，因为每次加载 kNElts 个元素，所以总的加载次数是 kNItems / kNElts
     static constexpr int kNLoads = kNItems / kNElts;
     static constexpr bool kIsEvenLen = kVarlen_ ? false : kIsEvenLen_;
     static constexpr bool kIsVariableB = kIsVariableB_;
@@ -51,6 +61,8 @@ struct Selective_Scan_fwd_kernel_traits {
 
     static constexpr bool kDirectIO = kVarlen_ ? false : kIsEvenLen && kNLoads == 1;
     static constexpr int kNLoadsIndex = kNItems / 4;
+    // 说明：向量化加载和存储的类型，vec_t 是一个包含 kNElts 个 input_t 的向量类型，
+    // 这样每次加载或存储就可以处理 kNElts 个元素，从而提高内存访问效率。
     using vec_t = typename BytesToType<kNBytes * kNElts>::Type;
     using scan_t = float2;
     using BlockLoadT = cub::BlockLoad<input_t, kNThreads, kNItems, cub::BLOCK_LOAD_WARP_TRANSPOSE>;
@@ -62,18 +74,26 @@ struct Selective_Scan_fwd_kernel_traits {
     using BlockStoreT = cub::BlockStore<input_t, kNThreads, kNItems, cub::BLOCK_STORE_WARP_TRANSPOSE>;
     using BlockStoreVecT = cub::BlockStore<vec_t, kNThreads, kNLoads,
         !kDirectIO ? cub::BLOCK_STORE_WARP_TRANSPOSE : cub::BLOCK_STORE_DIRECT>;
+    // 说明：文档见 https://nvidia.github.io/cccl/unstable/cub/api_docs/block_wide.html
     // using BlockScanT = cub::BlockScan<scan_t, kNThreads, cub::BLOCK_SCAN_RAKING_MEMOIZE>;
     // using BlockScanT = cub::BlockScan<scan_t, kNThreads, cub::BLOCK_SCAN_RAKING>;
     using BlockScanT = cub::BlockScan<scan_t, kNThreads, cub::BLOCK_SCAN_WARP_SCANS>;
+    // 说明：加载输入、权重和存储输出所需的共享内存大小
     static constexpr int kSmemIOSize = custom_max({sizeof(typename BlockLoadT::TempStorage),
                                                  sizeof(typename BlockLoadVecT::TempStorage),
+                                                 // 说明：kIsVariableB 和 kIsVariableC 为 true 时，才需要使用 TempStorage 来加载 B 和 C 的值
                                                  (int(kIsVariableB) + int(kIsVariableC)) * sizeof(typename BlockLoadWeightT::TempStorage),
                                                  (int(kIsVariableB) + int(kIsVariableC)) * sizeof(typename BlockLoadWeightVecT::TempStorage),
                                                  sizeof(typename BlockStoreT::TempStorage),
                                                  sizeof(typename BlockStoreVecT::TempStorage)});
+    // 说明：kSmemIOSize + Scan 所需的内存总大小，共享内存依次存储：
+    // 1. 加载输入和权重所需的临时存储空间，大小为 kSmemIOSize；
+    // 2. 扫描操作所需的临时存储空间，大小为 sizeof(typename BlockScanT::TempStorage)；
+    // 3. 扫描过程中需要保存的每个 state 的 running prefix，大小为 kNRows * MAX_DSTATE * sizeof(typename Ktraits::scan_t)
     static constexpr int kSmemSize = kSmemIOSize + sizeof(typename BlockScanT::TempStorage);
 };
 
+// 已阅
 template<typename Ktraits>
 __global__ __launch_bounds__(Ktraits::kNThreads, Ktraits::kMinBlocks)
 void selective_scan_fwd_kernel(SSMParamsBase params) {
@@ -97,6 +117,9 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
     // auto& smem_load = reinterpret_cast<typename BlockLoadT::TempStorage&>(smem_loadstorescan);
     auto& smem_load = reinterpret_cast<typename Ktraits::BlockLoadT::TempStorage&>(smem_);
     auto& smem_load_weight = reinterpret_cast<typename Ktraits::BlockLoadWeightT::TempStorage&>(smem_);
+    // 问题：这里使用的是 BlockLoadWeightT::TempStorage 而不是 BlockLoadWeightVecT::TempStorage，
+    // 是否因为 BlockLoadWeightT::TempStorage 占用的空间可能会更大一些，否则如果 BlockLoadWeightVecT::TempStorage 占用的空间更大一些，
+    // 那么可能产生数据的 overlap ?
     auto& smem_load_weight1 = *reinterpret_cast<typename Ktraits::BlockLoadWeightT::TempStorage*>(smem_ + sizeof(typename Ktraits::BlockLoadWeightT::TempStorage));
     auto& smem_store = reinterpret_cast<typename Ktraits::BlockStoreT::TempStorage&>(smem_);
     auto& smem_scan = *reinterpret_cast<typename Ktraits::BlockScanT::TempStorage*>(smem_ + Ktraits::kSmemIOSize);
@@ -129,6 +152,10 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
     input_t *delta = reinterpret_cast<input_t *>(params.delta_ptr) + sequence_start_index * params.delta_batch_stride
         + dim_id * kNRows * params.delta_d_stride;
     weight_t *A = reinterpret_cast<weight_t *>(params.A_ptr) + dim_id * kNRows * params.A_d_stride;
+    // 说明：B, C 实际 shape 为 [1, dstate, total_length]
+    // (ngroups, dstate, total_length) for varlen or (batch, ngroups, dstate, seqlen)
+    // 说明：B, C 缺 ngroups, dstate 和 total_length 三个维度，因为 params.B_d_stride 和 params.C_d_stride 在 varlen 时为 0
+    // Bvar 和 Cvar 缺 dstate 维度
     weight_t *B = reinterpret_cast<weight_t *>(params.B_ptr) + dim_id * kNRows * params.B_d_stride;
     input_t *Bvar = reinterpret_cast<input_t *>(params.B_ptr) + sequence_start_index * params.B_batch_stride + group_id * params.B_group_stride;
     weight_t *C = reinterpret_cast<weight_t *>(params.C_ptr) + dim_id * kNRows * params.C_d_stride;
@@ -167,8 +194,12 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
     //     smem_bc[state_idx] = B[state_idx * params.B_dstate_stride] * C[state_idx * params.C_dstate_stride];
     // }
 
+    // 说明：kNThreads 个线程，每个线程处理 kNItems 个 token，组成一个 chunk；
+    // kChunkSize 默认情况是 (128, 16) = 2048, 在 params.cache_enabled && params.block_size == 1024 时是 (64, 16) = 1024,
+    // 否则就是大于 seqlen 的值，这样就相当于不进行 chunk 划分，直接在一个 chunk 中处理所有 token
     constexpr int kChunkSize = kNThreads * kNItems;
 
+    // 说明：params.block_size 使用的是 mamba_block_size，这是一个可配置的参数；
     // Use block_size for chunking when APC is enabled, otherwise use 2048 for backwards compatibility
     const int iteration_chunk_size = params.cache_enabled ? params.block_size : 2048;
     const int n_chunks = (seqlen + iteration_chunk_size - 1) / iteration_chunk_size;
@@ -182,8 +213,13 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
     const int* initial_state_idx = params.initial_state_idx_ptr != nullptr ?
                                    reinterpret_cast<const int*>(params.initial_state_idx_ptr) : nullptr;
 
+    // 说明：initial ssm state 的 index
     const size_t load_cache_slot = params.cache_enabled && batch_cache_indices != nullptr ? batch_cache_indices[initial_state_idx[batch_id]] : cache_index;
 
+    // 优化：n_chunks 是根据 iteration_chunk_size 计算出来的，而 chunk_size 使用的是 kChunkSize，
+    // 在 params.cache_block = false 时，使用 iteration_chunk_size 和 kChunkSize 计算分块的结果都一样，要么都不分块，要么都根据 2048 长度进行分块；
+    // 在 params.cache_block = true && params.block_size != 1024 时，kChunkSize 根据序列长度不同会有不同的值，而 params.block_size 的值是固定的，
+    // 如果 params.block_size 的值小于 kChunkSize，那么实际的块数会比分出的块数少，相当于会多执行几次无效循环
     for (int chunk = 0; chunk < n_chunks; ++chunk) {
         input_t u_vals[kNRows][kNItems], delta_vals_load[kNRows][kNItems];
 
@@ -208,14 +244,23 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                 float u_val = float(u_vals[r][i]);
                 delta_vals[r][i] = float(delta_vals_load[r][i]) + delta_bias[r];
                 if (params.delta_softplus) {
+                    // 说明：当 delta 值 <= 20.f 时，使用 \ln(1 + \exp(x)) 计算；当 delta 值较大时，由于误差较小，直接使用 delta 值；
                     delta_vals[r][i] = delta_vals[r][i] <= 20.f ? log1pf(expf(delta_vals[r][i])) : delta_vals[r][i];
                 }
+                // 说明：delta_u_vals[r][i] 存储了 delta_vals[r][i] 和 u_val 的乘积，
+                // 因为在后续计算中会多次使用到这个乘积值，这样可以避免重复计算，提高效率；
                 delta_u_vals[r][i] = delta_vals[r][i] * u_val;
+                // 说明：out_vals[r][i] 存储了 D_val[r] 和 u_val 的乘积，
+                // 如果 D_ 不为 nullptr，则 D_val[r] 是 D 中对应元素的值；
+                // 如果 D_ 为 nullptr，则 D_val[r] 默认为 0，这样 out_vals[r][i] 的初始值就是 0；
+                // 说明：在 S4 论文中有相关介绍 (https://arxiv.org/pdf/2111.00396)，
+                // the term D*u can be viewed as a skip connection
                 out_vals[r][i] = D_val[r] * u_val;
             }
         }
 
         __syncthreads();
+        // 说明：dstate 对应 python 代码中的 ssm_state_size，对应论文中的 N，即 state dimension
         for (int state_idx = 0; state_idx < params.dstate; ++state_idx) {
             weight_t A_val[kNRows];
             #pragma unroll
@@ -225,13 +270,17 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                 constexpr float kLog2e = M_LOG2E;
                 A_val[r] *= kLog2e;
             }
+            // 说明：launch 中提到 kIsVariableB, kIsVariableC and kHasZ are all set to True to reduce binary size 
             // This variable holds B * C if both B and C are constant across seqlen. If only B varies
             // across seqlen, this holds C. If only C varies across seqlen, this holds B.
             // If both B and C vary, this is unused.
             weight_t BC_val[kNRows];
             weight_t B_vals[kNItems], C_vals[kNItems];
             if constexpr (kIsVariableB) {
+                // 说明：Bvar 缺 dstate 维度，这里补充之后加载数据
                 load_weight<Ktraits>(Bvar + state_idx * params.B_dstate_stride, B_vals,
+                    // 说明：乘 1 是因为值为实数而非复数，否则乘 2
+                    // 完整代码见 https://github.com/state-spaces/mamba/blob/main/csrc/selective_scan/selective_scan_fwd_kernel.cuh
                     smem_load_weight, (seqlen - chunk * kChunkSize) * (1));
                 if constexpr (!kIsVariableC) {
                     #pragma unroll
@@ -241,6 +290,7 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                 }
             }
             if constexpr (kIsVariableC) {
+                // 说明：避免 shared memory bank conflict，当 B 和 C 都变化时，B 的加载使用 smem_load_weight，C 的加载使用 smem_load_weight1
                 auto &smem_load_weight_C = !kIsVariableB ? smem_load_weight : smem_load_weight1;
                 load_weight<Ktraits>(Cvar + state_idx * params.C_dstate_stride, C_vals,
                     smem_load_weight_C, (seqlen - chunk * kChunkSize) * (1));
@@ -264,9 +314,20 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                 scan_t thread_data[kNItems];
                 #pragma unroll
                 for (int i = 0; i < kNItems; ++i) {
+                    // 说明：下面的值都是在固定 dim 和 state_idx 后得到的，r == 0
+                    // 2^(delta_vals[r][i] * A_val[r]) 对应 Mamba-1 论文中的 zero-order hold 等式中的 exp(delta * A)，
+                    // A_val[r] 在上面已经乘了 LOG2E，所以这里使用 exp2f 可以得到相同的结果；
+                    // B_vals[i] * delta_u_vals[r][i] 的值是 delta * B * u，相当于 \bar{B} * u 的后半部分，即
+                    // \bar{B} * u = (delta * A)^{-1} (\bar{A} - I) \cdot (delta * B) * u
+                    // 说明：在 Mamba-3 的论文中提到了，这里使用的是 Euler's discretization（一阶近似），
+                    // 即 h_t = \exp^{\Delta_t A_t} h_{t−1} + \Delta_t B_t x_t
                     thread_data[i] = make_float2(exp2f(delta_vals[r][i] * A_val[r]),
                                                  !kIsVariableB ? delta_u_vals[r][i] : B_vals[i] * delta_u_vals[r][i]);
                     if (seqlen % (kNItems * kNThreads) != 0) {  // So that the last state is correct
+                        // 说明：threadIdx.x * kNItems 表示前面的线程已经处理的连续 token 的数量，i 是当前线程处理的位置，
+                        // seqlen - chunk * kChunkSize 是排除前面的 chunk 之后剩余的 token 数量，
+                        // 如果当前线程处理的位置超过了剩余的 token 数量（说明处于最后一个 chunk），那么就将 thread_data[i] 的值设置为 (1.f, 0.f)，
+                        // \bar{A} 的值为 1 让 h 保持不变，delta * B * u 为 0 让输出不受到这个位置的影响
                         if (threadIdx.x * kNItems + i >= seqlen - chunk * kChunkSize) {
                             thread_data[i] = make_float2(1.f, 0.f);
                         }
@@ -275,10 +336,16 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                 // Initialize running total
                 scan_t running_prefix;
                 if (chunk > 0) {
+                    // 说明：smem_running_prefix 指向的区域长度为 kNRows * MAX_DSTATE * sizeof(typename Ktraits::scan_t)；
+                    // 说明：chunk 外循环，state_idx 内循环，每次内循环结束后都会将当前 state_idx 对应的 running prefix 存储到 
+                    // smem_running_prefix 中，供下一个 chunk 处理时加载使用；
+                    // 这里就是直接加载上一个 chunk 处理同一个 state_idx 时存储的 running prefix 的值，作为当前 chunk 处理时的初始状态；
                     running_prefix = smem_running_prefix[state_idx + r * MAX_DSTATE];
                 } else {
+                    // 说明：chunk == 0 时，从 ssm_states 中加载初始状态
                     // Load initial state
                     if (params.cache_enabled && has_initial_state && batch_cache_indices != nullptr) {
+                        // 说明：load_cache_slot 对应的是 initial ssm state 的 index
                         size_t state_offset = load_cache_slot * params.ssm_states_batch_stride +
                                              r * params.ssm_states_dim_stride +
                                              state_idx * params.ssm_states_dstate_stride;
@@ -293,12 +360,16 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                 }
 
                 SSMScanPrefixCallbackOp<weight_t> prefix_op(running_prefix);
+                // 说明：InclusiveScan 的文档见
+                // https://nvidia.github.io/cccl/unstable/cub/api/classcub_1_1BlockScan.html#_CPPv4I_i00EN3cub9BlockScan13InclusiveScanEvRA16ITEMS_PER_THREAD_1TRA16ITEMS_PER_THREAD_1T6ScanOpR21BlockPrefixCallbackOp
                 typename Ktraits::BlockScanT(smem_scan).InclusiveScan(
                     thread_data, thread_data, SSMScanOp<weight_t>(), prefix_op
                 );
                 // There's a syncthreads in the scan op, so we don't need to sync here.
                 // Unless there's only 1 warp, but then it's the same thread (0) reading and writing.
                 if (threadIdx.x == 0) {
+                    // 说明：每个 chunk 处理完后，Block 内的线程 0 会将当前 state_idx 对应的 running prefix
+                    // 存储到 smem_running_prefix 中，供下一个 chunk 处理时加载使用；
                     smem_running_prefix[state_idx + r * MAX_DSTATE] = prefix_op.running_prefix;
 
                     // Store state at the end of each chunk when cache is enabled
@@ -306,8 +377,10 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
 
                         size_t cache_slot;
                         if (chunk == n_chunks - 1) {
+                            // 说明：最后一个 chunk 写入 block_idx_last，即从后面对齐
                             cache_slot = batch_cache_indices[block_idx_last_scheduled[batch_id]];
                         } else {
+                            // 说明：非最后一个 chunk 写入 block_idx_first + chunk，即从前面对齐
                             cache_slot = batch_cache_indices[block_idx_first_scheduled[batch_id] + chunk];
                         }
 
@@ -315,6 +388,9 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                                              r * params.ssm_states_dim_stride +
                                              state_idx * params.ssm_states_dstate_stride;
 
+                        // 说明：ssm_states 保存的是 y 值
+                        // 理解：不存储 x 值，是因为初始的 state 为 0（Mamba2 论文的 B.1 Problem Definition 中有提到），
+                        // 所以 [x, y] * [0, 1] 的结果就是 y 的值，直接存储 y 就可以了
                         ssm_states[state_offset] = typename Ktraits::state_t(prefix_op.running_prefix.y);
                     } else if (!params.cache_enabled && chunk == n_chunks - 1) {
                         // Non-APC mode: store only final state at current batch position
@@ -326,10 +402,12 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                     const weight_t C_val = !kIsVariableC
                         ? BC_val[r]
                         : (!kIsVariableB ? BC_val[r] * C_vals[i] : C_vals[i]);
+                    // 说明：原来存储的是 D * u，现在加上 C * h
                     out_vals[r][i] += thread_data[i].y * C_val;
                 }
             }
         }
+        // 说明：out 对应 delta
         input_t *out = reinterpret_cast<input_t *>(params.out_ptr) + sequence_start_index * params.out_batch_stride
             + dim_id * kNRows * params.out_d_stride + chunk * kChunkSize;
         __syncthreads();
@@ -342,6 +420,7 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
         }
 
         if constexpr (kHasZ) {
+            // 说明：out_z 对应 z
             input_t *z = reinterpret_cast<input_t *>(params.z_ptr) + sequence_start_index * params.z_batch_stride
                 + dim_id * kNRows * params.z_d_stride + chunk * kChunkSize;
             input_t *out_z = reinterpret_cast<input_t *>(params.out_z_ptr) + sequence_start_index * params.out_z_batch_stride
@@ -354,6 +433,7 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                 #pragma unroll
                 for (int i = 0; i < kNItems; ++i) {
                     float z_val = z_vals[i];
+                    // 说明：Swish / SiLU
                     out_vals[r][i] *= z_val / (1 + expf(-z_val));
                 }
                 __syncthreads();
@@ -370,6 +450,7 @@ template<int kNThreads, int kNItems, typename input_t, typename weight_t, typena
 void selective_scan_fwd_launch(SSMParamsBase &params, cudaStream_t stream) {
     // Only kNRows == 1 is tested for now, which ofc doesn't differ from previously when we had each block
     // processing 1 row.
+    // 说明：kNRows 相当于 Mamba2 论文中的 P (head dimension)
     constexpr int kNRows = 1;
     // kIsVariableB, kIsVariableC and kHasZ are all set to True to reduce binary size
     constexpr bool kIsVariableB = true;
@@ -379,6 +460,7 @@ void selective_scan_fwd_launch(SSMParamsBase &params, cudaStream_t stream) {
             BOOL_SWITCH(params.query_start_loc_ptr != nullptr , kVarlen, [&] {
                 using Ktraits = Selective_Scan_fwd_kernel_traits<kNThreads, kNItems, kNRows, kIsEvenLen, kIsVariableB, kIsVariableC, kHasZ,  kVarlen, input_t, weight_t, state_t>;
                 constexpr int kSmemSize = Ktraits::kSmemSize + kNRows * MAX_DSTATE * sizeof(typename Ktraits::scan_t);
+                // 说明：每个 block 处理一个完整序列的一个 channel (kNRows = 1)
                 dim3 grid(params.batch, params.dim / kNRows);
                 auto kernel = &selective_scan_fwd_kernel<Ktraits>;
                 if (kSmemSize >= 48 * 1024) {
@@ -516,6 +598,7 @@ void set_ssm_params_fwd(SSMParamsBase &params,
     params.seqlen = seqlen;
     params.dstate = dstate;
     params.n_groups = n_groups;
+    // 说明：每组多少个 dim
     params.dim_ngroups_ratio = dim / n_groups;
     params.pad_slot_id = pad_slot_id;
 
@@ -540,6 +623,8 @@ void set_ssm_params_fwd(SSMParamsBase &params,
     params.cache_indices_ptr = cache_indices.has_value() ? cache_indices.value().data_ptr() : nullptr;
     params.has_initial_state_ptr = has_initial_state.has_value() ? has_initial_state.value().data_ptr() : nullptr;
 
+    // 说明：这里判断 APC 模式的条件是 block_idx_first_scheduled_token 有值，
+    // 在 conv1d 中判断 APC 模式的条件是 block_idx_last_scheduled_token 有值
     // Set cache parameters - cache is enabled if we have direct cache writing params
     params.cache_enabled = block_idx_first_scheduled_token.has_value();
     params.block_size = static_cast<int>(block_size);
@@ -618,8 +703,10 @@ void set_ssm_params_fwd(SSMParamsBase &params,
 }
 
 void selective_scan_fwd(const torch::Tensor &u, const torch::Tensor &delta,
+                  // 说明：B, C shape 为 [1, dstate, total_length]
                   const torch::Tensor &A, const torch::Tensor &B, const torch::Tensor &C,
                   const std::optional<torch::Tensor> &D_,
+                  // 说明：实参为 gate_p
                   const std::optional<torch::Tensor> &z_,
                   const std::optional<torch::Tensor> &delta_bias_,
                   bool delta_softplus,

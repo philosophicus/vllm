@@ -26,6 +26,7 @@ from vllm.v1.utils import copy_slice
 from vllm.v1.worker.block_table import MultiGroupBlockTable
 
 
+# 理解：缓存的请求状态
 @dataclass
 class CachedRequestState:
     req_id: str
@@ -34,6 +35,7 @@ class CachedRequestState:
     sampling_params: SamplingParams | None
     generator: torch.Generator | None
 
+    # 说明：Block IDs for each KV cache group
     block_ids: tuple[list[int], ...]
     num_computed_tokens: int
     output_token_ids: list[int]
@@ -78,6 +80,7 @@ class CachedRequestState:
         return -1
 
 
+# 待看
 class InputBatch:
     def __init__(
         self,
@@ -205,6 +208,7 @@ class InputBatch:
         self.repetition_penalties_cpu = self.repetition_penalties_cpu_tensor.numpy()
         self.repetition_penalties_reqs: set[str] = set()
 
+        # 说明：每轮输出的 token 数量，包括 bonus token 和 draft token
         # Speculative decoding
         self.num_accepted_tokens_cpu_tensor = torch.ones(
             (max_num_reqs,), dtype=torch.int64, device="cpu", pin_memory=pin_memory
@@ -221,6 +225,8 @@ class InputBatch:
         # generator should not be included in the dictionary.
         self.generators: dict[int, torch.Generator] = {}
 
+        # 说明：每个请求的每个输出 token 返回多少个 most likely tokens，
+        # None 表示不返回，-1 表示返回全部 vocab_size 个，否则返回指定数量（+1）
         self.num_logprobs: dict[str, int] = {}
 
         # To accumulate prompt logprobs tensor chunks across prefill steps.
@@ -229,8 +235,12 @@ class InputBatch:
         # Internal representation of per-step batch state changes, used for
         # reordering persistent batch and generating logitsprocs batch state
         # updates. Should reset each step.
+        # # 说明：BatchUpdate 的整体维护逻辑参考
+        # https://docs.vllm.ai/en/latest/design/logits_processors/#how-the-vllm-engine-builds-the-batchupdate-data-structure
+        # 讲得非常清晰
         self.batch_update_builder = BatchUpdateBuilder()
 
+        # 说明：SamplingParams 里 allowed_token_ids 相关的数据结构
         # TODO convert this to LogitsProcessor
         self.has_allowed_token_ids: set[str] = set()
         # NOTE(lufang): In the mask tensor, if the corresponding token allowed,
@@ -260,6 +270,7 @@ class InputBatch:
         self.pooling_params: dict[str, PoolingParams] = {}
         self.pooling_states: dict[str, PoolingStates] = {}
 
+        # 理解：CPU 已经进入下一轮，GPU 还在处理当前轮时，缓存一些状态？
         # Cached reference to the GPU tensor of previously sampled tokens
         self.prev_sampled_token_ids: torch.Tensor | None = None
         self.prev_req_id_to_index: dict[str, int] | None = None
@@ -933,6 +944,9 @@ class InputBatch:
             self.sampled_token_ids_cpu = None
             self.async_copy_ready_event = None
 
+    # 已阅
+    # 说明：采样之前调用此函数，将 prior step 采样得到的 token ids
+    # 更新到 sampling_metadata.output_token_ids 中
     def update_async_output_token_ids(self) -> None:
         """
         In async scheduling case, update output_token_ids in sampling metadata
@@ -951,6 +965,7 @@ class InputBatch:
             if prev_index is None:
                 continue
             req_output_token_ids = output_token_ids[index]
+            # 调研：关注这里判断最后一个 token id 是否是 -1 的意义
             if not req_output_token_ids or req_output_token_ids[-1] != -1:
                 # Final output id is not a placeholder, some tokens must have
                 # been discarded after a kv-load failure.
@@ -963,16 +978,22 @@ class InputBatch:
             new_ids: list[int] = sampled_token_ids[prev_index]
             if not new_ids:
                 continue
+            # 说明：排除 placeholder -1 之后，实际采样得到的 token 数量
             num_sampled_ids = len(new_ids) if new_ids[-1] != -1 else new_ids.index(-1)
             # Also account for case where there may be a smaller number of
             # output placeholders (tokens can be discarded after a kv-load failure).
             first_placeholder = req_output_token_ids.index(-1)
+            # 说明：剩余的 placeholder 数量，也是合法的可替换的 token 数量
+            # 调研：placeholder 数量是如何确定的？
             num_placeholders = len(req_output_token_ids) - first_placeholder
             num_to_replace = min(num_sampled_ids, num_placeholders)
             del new_ids[num_to_replace:]
             end_index = first_placeholder + num_to_replace
             req_output_token_ids[first_placeholder:end_index] = new_ids
 
+    # 已阅
+    # 说明：将采样模型 propose 并拷贝至 CPU 的 draft token ids 保存到
+    # sampling_metadata.spec_token_ids 中，后续在 RejectionSampler 中使用
     def update_async_spec_token_ids(self, draft_token_ids: list[list[int]]) -> None:
         """
         In async scheduling case, update spec_token_ids in sampling metadata with
@@ -989,6 +1010,7 @@ class InputBatch:
                     if prev_index is not None:
                         draft_ids = draft_token_ids[prev_index]
                         if draft_ids:
+                            # 调研：为什么要删除多余的 draft ids？
                             del draft_ids[len(spec_ids) :]
                             spec_ids.clear()
                             spec_ids.extend(draft_ids)
@@ -1021,6 +1043,7 @@ class InputBatch:
             and len(self.repetition_penalties_reqs) == 0
         )
 
+    # 说明：所有请求中，最大的 num_logprobs 值
     @property
     def max_num_logprobs(self) -> int | None:
         return max(self.num_logprobs.values()) if self.num_logprobs else None

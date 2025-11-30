@@ -34,6 +34,7 @@ class BatchDescriptor:
     batch for cudagraph.
     """
 
+    # 说明：token 数量，包含 padding 后的数量；对于非 padded batch，这个值就是实际的 token 数量
     num_tokens: int
     num_reqs: int | None = None
     """
@@ -249,6 +250,7 @@ class ForwardContext:
 _forward_context: ForwardContext | None = None
 
 
+# 已阅
 def get_forward_context() -> ForwardContext:
     """Get the current forward context."""
     assert _forward_context is not None, (
@@ -258,10 +260,12 @@ def get_forward_context() -> ForwardContext:
     return _forward_context
 
 
+# 已阅
 def is_forward_context_available() -> bool:
     return _forward_context is not None
 
 
+# 已阅
 def create_forward_context(
     attn_metadata: Any,
     vllm_config: VllmConfig,
@@ -294,6 +298,7 @@ def create_forward_context(
     )
 
 
+# 已阅
 @contextmanager
 def override_forward_context(forward_context: ForwardContext | None):
     """A context manager that overrides the current forward context.
@@ -309,12 +314,14 @@ def override_forward_context(forward_context: ForwardContext | None):
         _forward_context = prev_context
 
 
+# 说明：每次执行 execute_model 时都会调用这个函数
 @contextmanager
 def set_forward_context(
     attn_metadata: Any,
     vllm_config: VllmConfig,
     virtual_engine: int = 0,
     num_tokens: int | None = None,
+    # 说明：每个 DP rank 的 token 数量（可能经过 padding 至所有 rank 中的最大值）
     num_tokens_across_dp: torch.Tensor | None = None,
     cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
     batch_descriptor: BatchDescriptor | None = None,

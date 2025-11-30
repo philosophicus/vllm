@@ -24,6 +24,8 @@ def is_int_pow_2(n):
     return isinstance(n, int) and n > 0 and (n & (n - 1)) == 0
 
 
+# 已阅
+# 说明：完整的 ssd forward 逻辑
 def _mamba_chunk_scan_combined_fwd(
     x,
     dt,
@@ -31,6 +33,7 @@ def _mamba_chunk_scan_combined_fwd(
     B,
     C,
     chunk_size,
+    # 说明：out 的 shape 是 (seqlen, nheads, headdim)，和输入 x 的 shape 一样
     out,
     D=None,
     z=None,
@@ -123,6 +126,7 @@ def _mamba_chunk_scan_combined_fwd(
     )
     states = rearrange(states, "... (p n) -> ... p n", n=dstate)
 
+    # 说明：对 C 和 B 分块之后，计算相同位置两个分块的矩阵乘法
     # 4. Compute batched matrix multiply for C_j^T B_i terms
     CB = _bmm_chunk_fwd(C, B, chunk_size, cu_chunk_seqlens, output_dtype=torch.float32)
 
@@ -144,6 +148,7 @@ def _mamba_chunk_scan_combined_fwd(
         C,
         states,
         cu_chunk_seqlens,
+        # 说明：out 的 shape 是 (seqlen, nheads, headdim)，和输入 x 的 shape 一样
         out,  # in-place update
         seq_idx,
         D=D,
@@ -151,12 +156,14 @@ def _mamba_chunk_scan_combined_fwd(
         initial_states=initial_states,
     )
 
+    # 说明：states 的 shape 是 (nchunks, nheads, headdim, dstate)
     if return_intermediate_states:
         return states
     else:
         return states[last_chunk_indices]
 
 
+# 已阅
 def mamba_chunk_scan_combined_varlen(
     x,
     dt,

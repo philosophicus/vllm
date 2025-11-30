@@ -31,6 +31,7 @@ def is_layer_moe_router_gate(prefix: str) -> bool:
     return prefix.rsplit(".", 1)[-1] in MOE_LAYER_ROUTER_GATE_SUFFIXES
 
 
+# 已阅
 def shuffle_weight(w: torch.Tensor) -> torch.Tensor:
     # Shuffle weight along the last dimension so that
     # we folded the weights to adjance location
@@ -52,6 +53,8 @@ def shuffle_weight(w: torch.Tensor) -> torch.Tensor:
     return w_shuffled
 
 
+# 已阅
+# 说明：统计每个序列中各个 token 出现的次数，并返回非零 token 的掩码
 def get_token_bin_counts_and_mask(
     tokens: torch.Tensor,
     vocab_size: int,
@@ -62,6 +65,7 @@ def get_token_bin_counts_and_mask(
     bin_counts = torch.zeros(
         (num_seqs, vocab_size + 1), dtype=torch.long, device=tokens.device
     )
+    # 说明：dim = 1, target[i][index[i][j]] += src[i][j]
     bin_counts.scatter_add_(1, tokens, torch.ones_like(tokens))
     bin_counts = bin_counts[:, :vocab_size]
     mask = bin_counts > 0
@@ -69,6 +73,7 @@ def get_token_bin_counts_and_mask(
     return bin_counts, mask
 
 
+# 已阅
 def apply_penalties(
     logits: torch.Tensor,
     prompt_tokens_tensor: torch.Tensor,
@@ -110,6 +115,7 @@ def apply_penalties(
     return logits
 
 
+# 说明：已阅
 def default_unquantized_gemm(
     layer: torch.nn.Module,
     x: torch.Tensor,
@@ -119,6 +125,7 @@ def default_unquantized_gemm(
     return torch.nn.functional.linear(x, weight, bias)
 
 
+# 说明：已阅
 def use_aiter_triton_gemm(n, m, k, dtype):
     if (
         not rocm_aiter_ops.is_triton_gemm_enabled()
@@ -140,6 +147,7 @@ def use_aiter_triton_gemm(n, m, k, dtype):
     )
 
 
+# 说明：跳过 rocm 相关逻辑
 def rocm_unquantized_gemm_impl(
     x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None = None
 ) -> torch.Tensor:
@@ -208,12 +216,14 @@ def rocm_unquantized_gemm_impl(
     return torch.nn.functional.linear(x, weight, bias)
 
 
+# 说明：跳过 rocm 相关逻辑
 def rocm_unquantized_gemm_fake(
     x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None = None
 ) -> torch.Tensor:
     return x.new_empty((*x.shape[:-1], weight.shape[0]))
 
 
+# 说明：跳过 rocm 相关逻辑
 def rocm_unquantized_gemm(
     layer: torch.nn.Module,
     x: torch.Tensor,
@@ -223,6 +233,7 @@ def rocm_unquantized_gemm(
     return torch.ops.vllm.rocm_unquantized_gemm(x, weight, bias)
 
 
+# 说明：跳过 rocm 相关逻辑
 direct_register_custom_op(
     op_name="rocm_unquantized_gemm",
     op_func=rocm_unquantized_gemm_impl,
@@ -230,6 +241,7 @@ direct_register_custom_op(
 )
 
 
+# 说明：已阅
 def check_cpu_sgl_kernel(n: int, k: int, dtype: torch.dtype) -> bool:
     return (
         torch._C._cpu._is_amx_tile_supported()
@@ -239,6 +251,10 @@ def check_cpu_sgl_kernel(n: int, k: int, dtype: torch.dtype) -> bool:
     )
 
 
+# 已阅
+# 说明：创建 layer.cpu_linear 方法，用于在 CPU 上执行未量化的 GEMM 操作；
+# 如果 cpu_linear 是使用 kernel 实现的，则可以有条件地清空 layer.weight 参数以节省内存，
+# 否则需要基于 pytorch linear 完成 GEMM，此时需要保留 layer.weight 参数
 def dispatch_cpu_unquantized_gemm(
     layer: torch.nn.Module,
     remove_weight: bool,
@@ -286,6 +302,8 @@ def dispatch_cpu_unquantized_gemm(
     )
 
 
+# 已阅
+# 说明：在 CPU 上执行 matmul(A, B) + C
 def cpu_unquantized_gemm(
     layer: torch.nn.Module,
     x: torch.Tensor,
@@ -295,6 +313,7 @@ def cpu_unquantized_gemm(
     return layer.cpu_linear(x, weight, bias)
 
 
+# 已阅
 def dispatch_unquantized_gemm() -> Callable[..., torch.Tensor]:
     if current_platform.is_rocm():
         return rocm_unquantized_gemm

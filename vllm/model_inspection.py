@@ -131,6 +131,7 @@ def _format_module_tree(
     return lines
 
 
+# 已阅
 def format_model_inspection(model: nn.Module) -> str:
     """Format a model into a transformers-style hierarchical string."""
     return "\n".join(_format_module_tree(model))

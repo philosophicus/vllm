@@ -110,6 +110,7 @@ class CacheConfig:
     mamba_page_size_padded: int | None = None
     """ Optional override for mamba page size; used by hybrid mamba/attention
     models to ensure exact alignment with attention page size."""
+    # 说明：缓存分块的 token 数量
     mamba_block_size: int | None = Field(default=None, gt=0)
     """Size of a contiguous cache block in number of tokens for mamba cache.
     Can be set only when prefix caching is enabled.
@@ -122,6 +123,8 @@ class CacheConfig:
     """The data type to use for the Mamba cache (ssm state only, conv state will
     still be controlled by mamba_cache_dtype). If set to 'auto', the data type
     for the ssm state will be determined by mamba_cache_dtype."""
+    # 理解：all 指每个 block 的 final state 都被缓存，
+    # align 指只有每个 scheduler step 的最后一个 token 且该 token 是 block 的 final state 时才被缓存
     mamba_cache_mode: MambaCacheMode = "none"
     """The cache strategy for Mamba layers.
     - "none": set when prefix caching is disabled.

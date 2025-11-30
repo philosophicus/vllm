@@ -109,6 +109,7 @@ class Medusa(nn.Module):
         self,
         hidden_states: list[torch.Tensor],
     ) -> list[torch.Tensor]:
+        # 说明：logits_list
         logits_lst: list[torch.Tensor] = []
 
         for hs, lm_head in zip(hidden_states, self.lm_heads):

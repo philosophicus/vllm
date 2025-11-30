@@ -98,6 +98,14 @@ class ParallelConfig:
     """Number of pipeline parallel groups."""
     tensor_parallel_size: int = 1
     """Number of tensor parallel groups."""
+    # 已阅
+    # 说明：During prefill, for a long request with T new tokens, 
+    # we need to compute query/key/value tensors for these new tokens. 
+    # Say we have N GPUs, we can split the request into N chunks, 
+    # and each GPU computes one chunk of the query/key/value tensors.
+    # Depending on the use case, there're two possible strategies:
+    # 1. Partial query, full key/value
+    # 2. Partial query, partial key/value
     prefill_context_parallel_size: int = 1
     """Number of prefill context parallel groups."""
     data_parallel_size: int = 1
@@ -168,6 +176,7 @@ class ParallelConfig:
 
     enable_dbo: bool = False
     """Enable dual batch overlap for the model executor."""
+    # 说明：ubatch 的数量
     ubatch_size: int = 0
     """Number of ubatch size."""
 
@@ -245,6 +254,11 @@ class ParallelConfig:
     Set to be private as it's not intended to be configured by users.
     """
 
+    # 已阅
+    # 说明：控制如何在 sequence 维度将 KV Cache 分片到不同的 GPU（shard the KV cache across GPUs）
+    # 背景：tensor parallel 可以在 num_heads (H) 维度做并行化，随着 tp_size 的增加，
+    # KV cache for each GPU will be duplicated for tp_size / H，为了降低 duplication，可以使用 -dcp 选项
+    # 来控制在 sequence 维度继续做并行化，从而降低 duplication
     decode_context_parallel_size: int = 1
     """Number of decode context parallel groups, because the world size does
     not change by dcp, it simply reuse the GPUs of TP group, and tp_size
@@ -487,6 +501,9 @@ class ParallelConfig:
         aggregated_has_unfinished = bool(tensor.item())
         return aggregated_has_unfinished
 
+    # 已阅
+    # 功能：在 dp group 内取 kv cache memory size 的最小值；如果 kv_cache_memory==-1，
+    # 则表示无限制，此时将值设置为 int64 的最大值
     @staticmethod
     def sync_kv_cache_memory_size(dp_group: ProcessGroup, kv_cache_memory: int) -> int:
         if kv_cache_memory == -1:
@@ -494,6 +511,7 @@ class ParallelConfig:
         tensor = torch.tensor([kv_cache_memory], dtype=torch.int64, device="cpu")
         # we cannot use broadcast for stateless dp group since it depends
         # on global rank
+        # 说明：在 dp group 内取 kv_cache_memory 的最小值
         torch.distributed.all_reduce(tensor, op=ReduceOp.MIN, group=dp_group)
         return tensor.item()
 

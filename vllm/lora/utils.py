@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+# 已阅
 def get_captured_lora_counts(max_loras: int, specialize: bool) -> list[int]:
     """
     Returns num_active_loras values for cudagraph capture.

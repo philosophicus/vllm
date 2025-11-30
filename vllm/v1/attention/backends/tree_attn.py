@@ -69,6 +69,7 @@ class TreeAttentionBackend(AttentionBackend):
         return False
 
 
+# 已阅
 @dataclass
 class TreeAttentionMetadata:
     num_actual_tokens: int  # Number of tokens excluding padding.
@@ -142,6 +143,7 @@ class TreeAttentionMetadata:
         return self._cached_decode_metadata
 
 
+# 已阅
 class TreeAttentionMetadataBuilder(AttentionMetadataBuilder[TreeAttentionMetadata]):
     def __init__(
         self,
@@ -163,6 +165,8 @@ class TreeAttentionMetadataBuilder(AttentionMetadataBuilder[TreeAttentionMetadat
         )
         # Construct the tree attention bias.
         depth_counts = _get_depth_counts(tree_choices)
+        # 说明：shape = [num_tokens, num_tokens]，num_tokens = len(tree_choices) + 1，包含 root token；
+        # tree_attn_bias 其实是 tree_attn_mask，把不能 attend 的位置设置为 -inf，能 attend 的位置设置为 0
         self.tree_attn_bias = _prepare_tree_attn_bias(
             tree_choices,
             depth_counts,
@@ -170,6 +174,7 @@ class TreeAttentionMetadataBuilder(AttentionMetadataBuilder[TreeAttentionMetadat
             device=device,
         )
 
+        # 说明：设置重排序的阈值为 tree_attn_bias 的行数，即总 token 数
         self.reorder_batch_threshold = self.tree_attn_bias.shape[0]
 
     def build(
@@ -217,9 +222,12 @@ class TreeAttentionMetadataBuilder(AttentionMetadataBuilder[TreeAttentionMetadat
         orig_tree_attn_bias = self.tree_attn_bias
 
         if draft_index == 0:
+            # 说明：此时全部都是 prefill 请求，没有 decode 请求
             # Use prefill for drafting at the root level.
             self.tree_attn_bias = torch.empty(0)
         else:
+            # 说明：对 tree_attention_bias 进行切片，排除 root level，并保留 max_query_len 个 token
+            # 因为超过 max_query_len 的 token 在 query 里是不存在的
             # Slice the tree attention bias for drafting. Exclude
             # the root level.
             start, end = 1, 1 + common_attn_metadata.max_query_len
@@ -233,6 +241,7 @@ class TreeAttentionMetadataBuilder(AttentionMetadataBuilder[TreeAttentionMetadat
         return attn_metadata
 
 
+# 已阅
 def _get_depth_counts(sorted_tree_choices: list[tuple[int, ...]]) -> list[int]:
     # Count the number of choices at each depth of the tree.
     depth_counts = []
@@ -241,17 +250,21 @@ def _get_depth_counts(sorted_tree_choices: list[tuple[int, ...]]) -> list[int]:
         depth = len(path)
         if depth != prev_depth:
             depth_counts.append(0)
+        # 说明：深度的变化一定是 +1，否则上面只 append(0) 一次会漏掉中间的深度
         depth_counts[depth - 1] += 1
         prev_depth = depth
     return depth_counts
 
 
+# 说明：准备 tree attention bias 矩阵，实际上是 tree_attn_mask
 def _prepare_tree_attn_bias(
     sorted_tree_choices: list[tuple[int, ...]],
     depth_counts: list[int],
     dtype: torch.dtype | None,
     device: torch.device | None,
 ) -> torch.Tensor:
+    # 说明：[[0], [1], [0, 0], [0, 1], [1, 0], [1, 1], ...]，每个 tuple 多一个 token，
+    # 所以总 token 数是 len(sorted_tree_choices)
     # +1 comes from the additional root node.
     tree_len = len(sorted_tree_choices) + 1
     tree_attn_mask = torch.full(
@@ -277,6 +290,9 @@ def _prepare_tree_attn_bias(
                 continue
             ancestor_idx = []
             for c in range(len(cur_tree_choice) - 1):
+                # 说明：ancestor 是一系列 tuple，如 [0, 1, 0] 的 ancestor 有 [0] 和 [0, 1]，
+                # 分别找到它们在 sorted_tree_choices 里的位置，加 1 得到 token 的位置；
+                # +1 是因为 token 位置比索引多 1（root token）
                 ancestor_idx.append(
                     sorted_tree_choices.index(cur_tree_choice[: c + 1]) + 1
                 )

@@ -8,6 +8,7 @@ import torch
 from vllm.triton_utils import tl, triton
 
 
+# 已阅
 @triton.heuristics({"HAS_BIAS": lambda args: args["B"] is not None})
 @triton.heuristics({"HAS_Z": lambda args: args["Z"] is not None})
 @triton.jit
@@ -54,6 +55,7 @@ def _layer_norm_fwd_1pass_kernel(
         mean = tl.sum(x, axis=0) / N
         tl.store(Mean + row, mean)
         xbar = tl.where(cols < N, x - mean, 0.0)
+        # 说明：真实方差
         var = tl.sum(xbar * xbar, axis=0) / N
     else:
         xbar = tl.where(cols < N, x, 0.0)
@@ -65,6 +67,7 @@ def _layer_norm_fwd_1pass_kernel(
     w = tl.load(W + cols, mask=mask).to(tl.float32)
     if HAS_BIAS:
         b = tl.load(B + cols, mask=mask).to(tl.float32)
+    # 说明：normalize 之后的结果
     x_hat = (x - mean) * rstd if not IS_RMS_NORM else x * rstd
     y = x_hat * w + b if HAS_BIAS else x_hat * w
     if HAS_Z and NORM_BEFORE_GATE:
@@ -74,6 +77,7 @@ def _layer_norm_fwd_1pass_kernel(
     tl.store(Y + cols, y, mask=mask)
 
 
+# 已阅
 def _layer_norm_fwd(
     x,
     weight,
@@ -87,6 +91,7 @@ def _layer_norm_fwd(
 ):
     M, N = x.shape
     if group_size is None:
+        # 说明：默认只有一组，相当于 GroupNorm 变为 LayerNorm
         group_size = N
     assert N % group_size == 0
     ngroups = N // group_size
@@ -110,6 +115,7 @@ def _layer_norm_fwd(
         if not is_rms_norm
         else None
     )
+    # 说明：Rstd 存储 1/std，R 表示倒数 reciprocal
     rstd = torch.empty((ngroups * M,), dtype=torch.float32, device=x.device)
     # Less than 64KB per feature: enqueue fused kernel
     MAX_FUSED_SIZE = 65536 // x.element_size()
@@ -142,6 +148,7 @@ def _layer_norm_fwd(
     return out, mean, rstd
 
 
+# 已阅
 def rms_norm_gated(
     x, weight, bias, z=None, eps=1e-6, group_size=None, norm_before_gate=True
 ):

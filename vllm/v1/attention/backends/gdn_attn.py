@@ -59,6 +59,7 @@ class GDNAttentionMetadata:
 
     num_accepted_tokens: torch.Tensor | None = None  # shape: [batch,]
 
+    # 说明：以下参数在 compute_causal_conv1d_metadata 方法中计算得到
     # The following attributes are for triton implementation of causal_conv1d
     nums_dict: dict | None = None
     batch_ptr: torch.Tensor | None = None
@@ -206,18 +207,22 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             assert spec_sequence_masks_cpu is not None
             query_lens_cpu = query_start_loc_cpu[1:] - query_start_loc_cpu[:-1]
 
+            # 说明：根据 mask 获得所有非 spec decode 序列的长度
             non_spec_query_lens = query_lens[~spec_sequence_masks]
+            # 说明：长度等于 1 的非 spec decode 序列被认为是 decode 序列，计算数量
             num_decodes = (non_spec_query_lens == 1).sum().item()
             # Exclude zero-length padded sequences from prefill count.
             num_zero_len = (non_spec_query_lens == 0).sum().item()
             num_prefills = non_spec_query_lens.size(0) - num_decodes - num_zero_len
             num_decode_tokens = num_decodes
             num_prefill_tokens = non_spec_query_lens.sum().item() - num_decode_tokens
+            # 说明：spec decode 的 token 数量等于 spec decode 序列的长度之和
             num_spec_decode_tokens = (
                 query_lens.sum().item() - num_prefill_tokens - num_decode_tokens
             )
 
             if num_prefills == 0 and num_decodes == 0:
+                # 说明：spec token 的最大 size = min(序列数量 * 最大长度，query 序列长度)
                 spec_token_size = min(
                     num_spec_decodes * (self.num_spec + 1),
                     query_start_loc[-1].item(),

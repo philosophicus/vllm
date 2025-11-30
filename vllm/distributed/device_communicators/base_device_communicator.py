@@ -25,6 +25,7 @@ class Cache:
             return instance
 
 
+# 说明：for expert parallel communication
 class All2AllManagerBase:
     rank: int
     world_size: int
@@ -47,11 +48,13 @@ class All2AllManagerBase:
         # when we create this object
         self.dp_rank = self.dp_group.rank_in_group
         self.dp_world_size = self.dp_group.world_size
+        # 说明：组内 rank
         self.rank = dist.get_rank(cpu_group)
         self.world_size = dist.get_world_size(cpu_group)
 
         # all2all communication often has separate implementations for
         # intra-node and inter-node communication
+        # 说明：判断是否存在跨节点通信
         self.internode = not all(in_the_same_node_as(cpu_group, source_rank=0))
 
     def get_handle(self, kwargs):
@@ -131,6 +134,7 @@ class DeviceCommunicatorBase:
         self.ranks = dist.get_process_group_ranks(cpu_group)
         self.global_rank = dist.get_rank()
         self.global_world_size = dist.get_world_size()
+        # 说明：与 self.rank 完全相同，只是获取方式不同
         self.rank_in_group = dist.get_group_rank(self.cpu_group, self.global_rank)
 
         use_ep = False
@@ -142,18 +146,22 @@ class DeviceCommunicatorBase:
             # as long as we use data parallel (coupled data parallel
             # where all data parallel ranks execute forward together),
             # we initialize the all2all manager used in expert parallel.
+            # 说明：关注这里专家并行与数据并行的关系
             use_ep = config.parallel_config.data_parallel_size > 1
             all2all_backend = config.parallel_config.all2all_backend
 
+        # 说明：判断是否为专家并行通信器
         self.is_ep_communicator = "ep" in unique_name
         self.use_all2all = self.is_ep_communicator and use_ep
         self.all2all_backend = all2all_backend
         self.all2all_manager: All2AllManagerBase | None = None
 
     def all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
+        # 说明：默认 op 是 ReduceOp.SUM
         dist.all_reduce(input_, group=self.device_group)
         return input_
 
+    # 说明：在 dim 维度上进行 all_gather 操作（concat）
     def all_gather(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
         if dim < 0:
             # Convert negative dim to positive.
@@ -187,6 +195,8 @@ class DeviceCommunicatorBase:
     ) -> torch.Tensor | list[torch.Tensor]:
         raise NotImplementedError
 
+    # 说明：存在 bug
+    # 说明：在 dim 维度上进行 reduce_scatter 操作
     def reduce_scatter(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
         world_size = self.world_size
         # Bypass the function if we are using only 1 GPU.
@@ -202,6 +212,7 @@ class DeviceCommunicatorBase:
 
         # Note: This will produce an incorrect answer if we don't make
         # the input_tensor contiguous. Possible bug in reduce_scatter_tensor?
+        # 说明：存在 bug，应该是 movedim(dim, 0)，将 dim 维度移到最前面
         input_tensor = input_.movedim(0, dim).contiguous()
 
         assert input_tensor.shape[0] % world_size == 0
@@ -225,6 +236,7 @@ class DeviceCommunicatorBase:
     ) -> torch.Tensor:
         raise NotImplementedError
 
+    # 说明：在 dim 维度上进行 gather 操作，将所有 rank 的 tensor 聚合到 dst rank 上
     def gather(
         self, input_: torch.Tensor, dst: int = 0, dim: int = -1
     ) -> torch.Tensor | None:
@@ -256,6 +268,7 @@ class DeviceCommunicatorBase:
             output_tensor = None
         return output_tensor
 
+    # 说明：环形发送，默认发送给下一个 rank
     def send(self, tensor: torch.Tensor, dst: int | None = None) -> None:
         """Sends a tensor to the destination rank in a blocking way"""
         """NOTE: `dst` is the local rank of the destination rank."""
@@ -263,6 +276,7 @@ class DeviceCommunicatorBase:
             dst = (self.rank_in_group + 1) % self.world_size
         torch.distributed.send(tensor, self.ranks[dst], self.device_group)
 
+    # 说明：环形接收，默认从上一个 rank 接收
     def recv(
         self, size: torch.Size, dtype: torch.dtype, src: int | None = None
     ) -> torch.Tensor:
@@ -278,6 +292,7 @@ class DeviceCommunicatorBase:
     def destroy(self):
         pass
 
+    # 说明：为模型准备通信缓冲区，只在 is_ep_communicator 为 True 时生效
     def prepare_communication_buffer_for_model(self, model: torch.nn.Module) -> None:
         """
         Prepare the communication buffer for the model.

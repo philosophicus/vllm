@@ -70,6 +70,8 @@ class BlockHashToBlockMap:
             self._unexpected_blocks_type(blocks)
         return None
 
+    # 已阅
+    # 说明：处理 duplicated block 的逻辑
     def insert(self, key: BlockHashWithGroupId, block: KVCacheBlock) -> None:
         """
         Inserts the KVCacheBlock to the cache
@@ -125,6 +127,8 @@ class BlockHashToBlockMap:
         raise AssertionError(f"Invalid KV cache block type {type(blocks)}")
 
 
+# 说明：逻辑 block 池，参数 num_gpu_blocks 来自 kv_cache_config.num_blocks，
+# 而 kv_cache_config.num_blocks 为逻辑 block 数
 class BlockPool:
     """BlockPool that manages KVCacheBlocks.
     It provides methods to allocate, free and cache the kv cache blocks. The
@@ -148,6 +152,11 @@ class BlockPool:
         self,
         num_gpu_blocks: int,
         enable_caching: bool,
+        # 说明：从 EngineCore -> Scheduler -> KVCacheManager -> KVCacheCoordinator 一路传过来的参数，
+        # 值为 vllm_config.cache_config.block_size
+        #   * vllm_config.parallel_config.decode_context_parallel_size
+        #   * vllm_config.parallel_config.prefill_context_parallel_size
+        # 表示能支持一轮 pcp 和 dcp 的整体 block_size
         hash_block_size: int,
         enable_kv_cache_events: bool = False,
         metrics_collector: KVCacheMetricsCollector | None = None,
@@ -179,6 +188,8 @@ class BlockPool:
 
         self.metrics_collector = metrics_collector
 
+    # 已阅
+    # 说明：按 kv_cache_group_ids 顺序，返回每个组对应的 cached block，组成列表。有一个组没命中就整体 None
     def get_cached_block(
         self, block_hash: BlockHash, kv_cache_group_ids: list[int]
     ) -> list[KVCacheBlock] | None:
@@ -206,6 +217,9 @@ class BlockPool:
             cached_blocks.append(block)
         return cached_blocks
 
+    # 已阅
+    # 说明：cache block 是指设置 KVCacheBlock 中的 block_hash 元数据，并把 block 插入到 cached_block_hash_to_block 中，
+    # 以便后续通过 block hash 找到对应的 block，从而实现 prefix caching
     def cache_full_blocks(
         self,
         request: Request,
@@ -240,6 +254,7 @@ class BlockPool:
             # Common case.
             block_hashes: BlockHashList = request.block_hashes
         else:
+            # 说明：KV Cache Group 的 block size 是 block table 的 block size 的整数倍
             # block_size is a multiple of hash_block_size. This happens when
             # different KV cache groups have different block sizes.
             assert block_size % self.hash_block_size == 0
@@ -250,6 +265,7 @@ class BlockPool:
             )
 
         new_block_hashes = block_hashes[num_cached_blocks:]
+        # 说明：Collect new block hashes for KV cache events.
         new_hashes: list[ExternalBlockHash] | None = (
             [] if self.enable_kv_cache_events else None
         )
@@ -297,6 +313,7 @@ class BlockPool:
                 )
             )
 
+    # 已阅
     def get_new_blocks(self, num_blocks: int) -> list[KVCacheBlock]:
         """Get new blocks from the free block pool.
 
@@ -316,6 +333,8 @@ class BlockPool:
         # In order to only iterate the list once, we duplicated code a bit
         if self.enable_caching:
             for block in ret:
+                # 说明：新 block 的原有内容已经不能再作为其他请求的 prefix cache，如果它在 cached_block_hash_to_block 中
+                # 则需要把它从缓存中移除
                 self._maybe_evict_cached_block(block)
                 assert block.ref_cnt == 0
                 block.ref_cnt += 1
@@ -329,6 +348,7 @@ class BlockPool:
                     self.metrics_collector.on_block_allocated(block)
         return ret
 
+    # 已阅
     def _maybe_evict_cached_block(self, block: KVCacheBlock) -> bool:
         """
         If a block is cached in `cached_block_hash_to_block`, we reset its hash
@@ -369,6 +389,7 @@ class BlockPool:
             )
         return True
 
+    # 已阅
     def touch(self, blocks: Sequence[KVCacheBlock]) -> None:
         """Touch a block increases its reference count by 1, and may remove
         the block from the free queue. This is used when a block is hit by
@@ -386,6 +407,7 @@ class BlockPool:
             if self.metrics_collector:
                 self.metrics_collector.on_block_accessed(block)
 
+    # 已阅
     def free_blocks(self, ordered_blocks: Iterable[KVCacheBlock]) -> None:
         """Free a list of blocks. The blocks should be ordered by their
         eviction priority, where the first block will be evicted first.

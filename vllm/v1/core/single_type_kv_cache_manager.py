@@ -56,11 +56,14 @@ class SingleTypeKVCacheManager(ABC):
         self.block_pool = block_pool
         self.enable_caching = enable_caching
 
+        # 说明：request 当前长度对应的 blocks，如果某个位置的 block 被 remove，
+        # 则该位置会被赋值为 block_pool.null_block
         # Mapping from request ID to blocks to track the blocks allocated
         # for each request, so that we can free the blocks when the request
         # is finished.
         self.req_to_blocks: defaultdict[str, list[KVCacheBlock]] = defaultdict(list)
 
+        # 说明：local computed blocks 的数量，包括 null blocks
         # {req_id: The number of cached blocks for this given request}
         # This is used to track the number of cached blocks for each request.
         # This is only used to track the RUNNING requests, we do not track the
@@ -74,6 +77,9 @@ class SingleTypeKVCacheManager(ABC):
     def _get_num_evictable_blocks(cls, blocks: Sequence[KVCacheBlock]):
         return sum(blk.ref_cnt == 0 and not blk.is_null for blk in blocks)
 
+    # 已阅
+    # 说明：new_computed_blocks 刚计算完，没有保存到 coordinator 中；
+    # new_computed_blocks 可能包含位于 free queue 中的 block
     def get_num_blocks_to_allocate(
         self,
         request_id: str,
@@ -105,6 +111,8 @@ class SingleTypeKVCacheManager(ABC):
         num_req_blocks = len(self.req_to_blocks.get(request_id, ()))
 
         if request_id in self.num_cached_block:
+            # 说明：len(new_computed_blocks) == 0 表示没有 prefix cache hit 了；
+            # prefix cache hit 只在新 request 的前缀计算中发生，RUNNING request 已经不在前缀计算阶段了
             # Fast-path: a running request won't have any new prefix-cache hits.
             assert len(new_computed_blocks) == 0
             # NOTE: With speculative decoding, request's blocks may be allocated
@@ -112,11 +120,16 @@ class SingleTypeKVCacheManager(ABC):
             # num_required_blocks may be smaller than num_req_blocks.
             return max(num_required_blocks - num_req_blocks, 0)
 
+        # 说明：全部 computed tokens 中需要跳过的 tokens 数量
         num_skipped_tokens = self.get_num_skipped_tokens(total_computed_tokens)
+        # 说明：本地的 computed tokens 数量
         num_local_computed_blocks = len(new_computed_blocks) + num_req_blocks
         # Number of whole blocks that are skipped by the attention window.
         # If nothing is skipped, this is 0.
         num_skipped_blocks = num_skipped_tokens // self.block_size
+        # 说明：num_local_computed_blocks 大，表示本地还有一部分 computed blocks 在 attention window 内；
+        # 否则说明本地 computed blocks 都被跳过了，甚至 externel computed blocks 也有部分被跳过了，
+        # 此时就不需要为这些被跳过的 external computed blocks 分配 block 了，他们对应的位置会被设置为 block_pool.null_block
         # We need blocks for the non-skipped suffix. If there are still
         # local-computed blocks inside the window, they contribute to the
         # required capacity; otherwise, skipped blocks dominate.
@@ -125,11 +138,16 @@ class SingleTypeKVCacheManager(ABC):
             0,
         )
 
+        # 说明：num_req_blocks 后面拼接 new_computed_blocks，如果 num_req_blocks 比 num_skipped_blocks 小，
+        # 那么 new_computed_blocks 中前面的一部分（num_skipped_blocks - num_req_blocks）也要被跳过；
+        # 如果 num_skipped_blocks 比 num_local_computed_blocks 大，那么 new_computed_blocks 中的所有 block 都要被跳过
         # Among the `new_computed_blocks`, the first `num_skipped_blocks` worth
         # of blocks are skipped; `num_req_blocks` of those may already be in
         # `req_to_blocks`, so only skip the remainder from `new_computed_blocks`.
         num_skipped_new_computed_blocks = max(0, num_skipped_blocks - num_req_blocks)
 
+        # 说明：检查请求真正需要的 new_computed_blocks 中有多少是处于 free queue 中的，需要分配这些 block，
+        # 将他们从 free queue 中移除出来
         # If a computed block is an eviction candidate (in the free queue and
         # ref_cnt == 0), it will be removed from the free queue when touched by
         # the allocated request, so we must count it in the free-capacity check.
@@ -138,10 +156,15 @@ class SingleTypeKVCacheManager(ABC):
         )
         return num_new_blocks + num_evictable_blocks
 
+    # 已阅
+    # 说明：只有新 request (非 running) 才会有 new_computed_blocks，才支持保存；为新 request 的
+    # local computed tokens 和 external computed tokens 分配 blocks，对于被跳过的 blocks 使用 null block 占位
     def allocate_new_computed_blocks(
         self,
         request_id: str,
         new_computed_blocks: Sequence[KVCacheBlock],
+        # 说明：num_local_computed_tokens = num_computed_tokens + len(new_computed_blocks) * block_size，
+        # 但对于新 request 而言，num_computed_tokens 是 0
         num_local_computed_tokens: int,
         num_external_computed_tokens: int,
     ) -> None:
@@ -170,6 +193,7 @@ class SingleTypeKVCacheManager(ABC):
         # A new request.
         req_blocks = self.req_to_blocks[request_id]
         assert len(req_blocks) == 0
+        # 说明：num_local_computed_tokens = len(new_computed_blocks) * block_size
         num_total_computed_tokens = (
             num_local_computed_tokens + num_external_computed_tokens
         )
@@ -197,6 +221,7 @@ class SingleTypeKVCacheManager(ABC):
         req_blocks.extend([self._null_block] * num_skipped_blocks)
         # Add the remaining computed blocks.
         req_blocks.extend(new_computed_blocks)
+        # 说明：记录 local computed blocks 的数量，包括 null blocks
         # All cached hits (including skipped nulls) are already cached; mark
         # them so cache_blocks() will not try to re-cache blocks that already
         # have a block_hash set.
@@ -209,6 +234,7 @@ class SingleTypeKVCacheManager(ABC):
             )
             req_blocks.extend(allocated_blocks)
 
+    # 已阅
     def allocate_new_blocks(
         self, request_id: str, num_tokens: int, num_tokens_main_model: int
     ) -> list[KVCacheBlock]:
@@ -236,6 +262,7 @@ class SingleTypeKVCacheManager(ABC):
             req_blocks.extend(new_blocks)
             return new_blocks
 
+    # 已阅
     def cache_blocks(self, request: Request, num_tokens: int) -> None:
         """
         Cache the blocks for the request.
@@ -344,6 +371,9 @@ class SingleTypeKVCacheManager(ABC):
 
         raise NotImplementedError
 
+    # 已阅
+    # 说明：remove 包括设置 block 对应位置为 block_pool.null_block 和
+    # 对所有被 remove 的 block 执行 block_pool 的 free_blocks
     def remove_skipped_blocks(
         self, request_id: str, total_computed_tokens: int
     ) -> None:
@@ -377,6 +407,10 @@ class SingleTypeKVCacheManager(ABC):
         removed_blocks: list[KVCacheBlock] = []
         # Because the block starts from index 0, the num_skipped_block-th block
         # corresponds to index num_skipped_blocks - 1.
+        # 补充：The freed blocks are added to the tail of the free queue in the 
+        # reverse order. This is because the last block of a request must hash 
+        # more tokens and is less likely to be reused by other requests. 
+        # As a result, it should be evicted first.
         for i in range(num_skipped_blocks - 1, -1, -1):
             if blocks[i] == self._null_block:
                 # If the block is already a null block, the blocks before it
@@ -387,6 +421,7 @@ class SingleTypeKVCacheManager(ABC):
             blocks[i] = self._null_block
         self.block_pool.free_blocks(removed_blocks)
 
+    # 已阅
     def get_num_skipped_tokens(self, num_computed_tokens: int) -> int:
         """
         Get the number of tokens that will be skipped for attention computation.
@@ -406,6 +441,7 @@ class SingleTypeKVCacheManager(ABC):
 
 
 class FullAttentionManager(SingleTypeKVCacheManager):
+    # 已阅
     @classmethod
     def find_longest_cache_hit(
         cls,
@@ -443,6 +479,8 @@ class FullAttentionManager(SingleTypeKVCacheManager):
                     computed.append(cached)
             else:
                 break
+        # 补充：If eagle is enabled, drop the last matched block to force recompute the
+        # last block to get the required hidden states for eagle drafting head.
         if use_eagle and computed_blocks[0]:
             # Need to drop the last matched block if eagle is enabled.
             for computed in computed_blocks:
@@ -561,6 +599,7 @@ class SlidingWindowManager(SingleTypeKVCacheManager):
                 computed.pop()
         return computed_blocks
 
+    # 已阅
     def get_num_skipped_tokens(self, num_computed_tokens: int) -> int:
         """
         Get the number of tokens that will be skipped for attention computation.
@@ -696,6 +735,7 @@ class ChunkedLocalAttentionManager(SingleTypeKVCacheManager):
                 break
         return computed_blocks
 
+    # 已阅
     def get_num_skipped_tokens(self, num_computed_tokens: int) -> int:
         """
         Get the number of tokens that will be skipped for attention computation.
@@ -984,6 +1024,7 @@ class MambaManager(SingleTypeKVCacheManager):
             self.last_state_block_idx.pop(request_id, None)
         super().free(request_id)
 
+    # 已阅
     def get_num_skipped_tokens(self, num_computed_tokens: int) -> int:
         """
         Get the number of tokens whose mamba state are not needed anymore. Mamba only
@@ -1080,6 +1121,7 @@ class SinkFullAttentionManager(FullAttentionManager):
         self.sink_blocks = self.block_pool.free_block_queue.popleft_n(num_sink_block)
 
 
+# 已阅
 spec_manager_map: dict[type[KVCacheSpec], type[SingleTypeKVCacheManager]] = {
     FullAttentionSpec: FullAttentionManager,
     MLAAttentionSpec: FullAttentionManager,
@@ -1091,6 +1133,7 @@ spec_manager_map: dict[type[KVCacheSpec], type[SingleTypeKVCacheManager]] = {
 }
 
 
+# 已阅
 def get_manager_for_kv_cache_spec(
     kv_cache_spec: KVCacheSpec, **kwargs
 ) -> SingleTypeKVCacheManager:

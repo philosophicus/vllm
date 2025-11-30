@@ -80,6 +80,7 @@ def json_map_leaves(
 ) -> JSONTree[_U]: ...
 
 
+# 已阅
 def json_map_leaves(
     func: Callable[[_T], _U],
     value: Any,

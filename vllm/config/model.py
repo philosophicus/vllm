@@ -268,6 +268,11 @@ class ModelConfig:
     used with `--generation-config auto`, the override parameters will be
     merged with the default config from the model. If used with
     `--generation-config vllm`, only the override parameters are used."""
+    # 说明：Sleep Mode allows you to temporarily release most GPU memory used by 
+    # a model, including model weights and KV cache, without stopping the server 
+    # or unloading the Docker container. This is especially useful for RLHF, 
+    # training, or cost-saving scenarios where GPU resources need to be freed 
+    # between inference workloads.
     enable_sleep_mode: bool = False
     """Enable sleep mode for the engine (only cuda and
     hip platforms are supported)."""
@@ -1249,15 +1254,18 @@ class ModelConfig:
                     f"cannot determine the num of {block_type} layers"
                 )
 
+    # 已阅
     def get_mamba_chunk_size(self) -> int | None:
         """
         Returns the mamba chunk size if it exists
         """
         # used by e.g. Bamba, FalconH1, Granite, PLaMo2
+        # 说明：Bamba, FalconH1, Granite 默认值为 256，NemotronH 默认值为 128
         chunk_size = getattr(self.hf_text_config, "mamba_chunk_size", None)
         if chunk_size is None:
             # used by e.g. Mamba2, NemotronH, Zamba
-            chunk_size = getattr(self.hf_text_config, "chunk_size", None)
+            # 说明：Mamba2, Zamba2 默认值为 256
+            chunk_size = getattr(self.hf_text_config, "`chunk_size", None)
 
         # Since Mamba1 does not have a chunk notion
         # we use a default chunk size of 1024.
@@ -1529,6 +1537,7 @@ class ModelConfig:
             return dense_modules[-1]["out_features"]
         return self.get_hidden_size()
 
+    # 已阅
     def get_and_verify_max_len(self, max_model_len: int):
         # Consider max_model_len in tokenizer_config only when
         # pooling models use absolute position_embedding.
@@ -1725,10 +1734,12 @@ _SUFFIX_TO_DEFAULTS: list[tuple[str, tuple[RunnerType, ConvertType]]] = [
 ]
 
 
+# 已阅
 def iter_architecture_defaults():
     yield from _SUFFIX_TO_DEFAULTS
 
 
+# 已阅
 def try_match_architecture_defaults(
     architecture: str,
     *,
@@ -1907,6 +1918,9 @@ def _get_head_dtype(
         raise ValueError(f"Unknown dtype: {head_dtype}")
 
 
+# 已阅
+# 说明：先推导得到 derived_max_model_len，再根据 max_model_len 的值以及 max_model_len 和 derived_max_model_len 的关系
+# 来进行验证和调整，得到最终的 max_model_len
 def _get_and_verify_max_len(
     hf_config: PretrainedConfig,
     model_arch_config: ModelArchitectureConfig,
@@ -1918,10 +1932,12 @@ def _get_and_verify_max_len(
     encoder_config: dict[str, Any] | None = None,
 ) -> int:
     """Get and verify the model's maximum length."""
+    # 说明：从 HuggingFace config 中推导出的 max_model_len 以及对应的 key
     (derived_max_model_len, max_len_key) = (
         model_arch_config.derived_max_model_len_and_key
     )
 
+    # 说明：如果模型配置中手动禁用了 sliding window，那么 max_model_len 应该以 sliding window 长度为上限；
     # If sliding window is manually disabled, max_length should be less
     # than the sliding window length in the model config.
     if (
@@ -1966,6 +1982,8 @@ def _get_and_verify_max_len(
     if rope_parameters and not is_rope_parameters_nested(rope_parameters):
         rope_parameters = {"": rope_parameters}
 
+    # 说明：如果模型使用了 RoPE，并且 rope_parameters 中定义了 scaling factor，
+    # 那么 derived_max_model_len 需要乘上这个 scaling factor 来得到正确的 max_model_len
     # NOTE(woosuk): Gemma3's max_model_len (128K) is already scaled by RoPE
     # scaling, so we skip applying the scaling factor again.
     if rope_parameters is not None and "gemma3" not in hf_config.model_type:
@@ -1975,6 +1993,9 @@ def _get_and_verify_max_len(
             # loading HF config
             rope_type = rp["rope_type"]
 
+            # 说明：su 是 legacy rope_type，现使用 longrope 替换；
+            # 说明：rope_type 包括 default, linear, dynamic, yarn, longrope, llama3，
+            # 具体见 modeling_rope_utils
             if rope_type not in ("su", "longrope", "llama3"):
                 # NOTE: rope_type == "default" does not define factor https://github.com/huggingface/transformers/blob/v4.45.2/src/transformers/modeling_rope_utils.py
                 # NOTE: This assumes all layer types have the same scaling factor.

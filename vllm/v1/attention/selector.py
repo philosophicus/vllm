@@ -18,6 +18,7 @@ from vllm.v1.attention.backends.registry import (
 logger = init_logger(__name__)
 
 
+# 已阅
 class AttentionSelectorConfig(NamedTuple):
     head_size: int
     dtype: torch.dtype
@@ -43,6 +44,7 @@ class AttentionSelectorConfig(NamedTuple):
         )
 
 
+# 已阅
 def get_attn_backend(
     head_size: int,
     dtype: torch.dtype,
@@ -86,6 +88,10 @@ def get_attn_backend(
     )
 
 
+# 已阅
+# 说明：根据 backend 枚举值和 attn_selector_config 选择 AttentionBackend 类，
+# 并（根据具体情况）缓存 kv_cache_layout 结果；
+# 实际选择由当前平台的 get_attn_backend_cls 方法完成
 @cache
 def _cached_get_attn_backend(
     backend,
@@ -118,6 +124,7 @@ def _cached_get_attn_backend(
     return backend
 
 
+# 已阅
 def get_mamba_attn_backend(
     mamba_type: str,
 ) -> type[AttentionBackend]:
@@ -125,6 +132,7 @@ def get_mamba_attn_backend(
     return _cached_get_mamba_attn_backend(mamba_type)
 
 
+# 已阅
 @cache
 def _cached_get_mamba_attn_backend(
     mamba_type: str,

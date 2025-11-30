@@ -115,8 +115,10 @@ class SpecDecodeBaseProposer:
 
         self.attn_metadata_builder: AttentionMetadataBuilder | None = None
         self.draft_indexer_metadata_builder: AttentionMetadataBuilder | None = None
+        # 说明：eagle layers
         self.attn_layer_names: list[str] = []
         self.indexer_layer_names: list[str] = []
+        # 说明：aux_hidden_state
         self.eagle3_use_aux_hidden_state: bool = (
             self._get_eagle3_use_aux_hidden_state_from_config()
         )
@@ -170,6 +172,7 @@ class SpecDecodeBaseProposer:
         # We need +1 here because the arange is used to set query_start_loc,
         # which has one more element than batch_size.
         max_num_slots_for_arange = max(max_batch_size + 1, self.max_num_tokens)
+        # 说明：提前准备好 arange，避免每次 propose 都要重新创建
         self.arange = torch.arange(
             max_num_slots_for_arange, device=device, dtype=torch.int32
         )
@@ -200,6 +203,7 @@ class SpecDecodeBaseProposer:
             device=device,
         )
 
+        # 说明：对每个请求的 next_token_id 的备份
         self.backup_next_token_ids = CpuGpuBuffer(
             max_batch_size,
             dtype=torch.int32,
@@ -212,6 +216,7 @@ class SpecDecodeBaseProposer:
             self.max_num_tokens, dtype=torch.int64, device=device
         )
 
+        # 说明：allowed_attn_types 仅在 ROCM 平台下启用
         # Determine allowed attention backends once during initialization.
         self.allowed_attn_types: tuple | None = None
         if current_platform.is_rocm():
@@ -255,6 +260,7 @@ class SpecDecodeBaseProposer:
         spec_token_tree = self.speculative_config.speculative_token_tree
         assert spec_token_tree is not None
         self.tree_choices: list[tuple[int, ...]] = ast.literal_eval(spec_token_tree)
+        # 说明：breadth-first 排序，所以最后一个节点的长度就是树的深度
         tree_depth = len(self.tree_choices[-1])
         # Precompute per-level properties of the tree.
         num_drafts_per_level = [0] * tree_depth
@@ -266,6 +272,9 @@ class SpecDecodeBaseProposer:
             self.cu_drafts_per_level.append(
                 self.cu_drafts_per_level[-1] + num_drafts_per_level[level]
             )
+            # 说明：下一层草稿数 // 上一层草稿数
+            # 问题：并没有确保 num_drafts_per_level[level] 大于 num_drafts_per_level[level - 1]，
+            # 即每个至少节点有一个子节点
             self.child_drafts_per_level.append(
                 num_drafts_per_level[level] // num_drafts_per_level[level - 1]
             )
@@ -372,10 +381,12 @@ class SpecDecodeBaseProposer:
 
         self.cudagraph_dispatcher.initialize_cudagraph_keys(eagle_cudagraph_mode)
 
+    # 已阅
     def propose(
         self,
         # [num_tokens]
         target_token_ids: torch.Tensor,
+        # 说明：存储的是 position id
         # [num_tokens] or [3, num_tokens] when M-RoPE is enabled
         target_positions: torch.Tensor,
         # [num_tokens, hidden_size]
@@ -422,6 +433,7 @@ class SpecDecodeBaseProposer:
         attn_metadata = attn_metadata_builder.build_for_drafting(
             common_attn_metadata=common_attn_metadata, draft_index=0
         )
+        # 说明：目前尚未支持混合 kv cache，即同时支持多种 attention
         # FIXME: support hybrid kv for draft model (remove separate indexer)
         if self.draft_indexer_metadata_builder:
             draft_indexer_metadata = (
@@ -451,11 +463,16 @@ class SpecDecodeBaseProposer:
         )
         num_input_tokens = batch_desc.num_tokens
         if num_tokens_across_dp is not None:
+            # 说明：把可能经过 pad_for_cudagraph 后的 token 数量设置回 num_tokens_across_dp
             num_tokens_across_dp[self.dp_rank] = num_input_tokens
 
+        # 说明：num_tokens 未经过 padding 的输入长度，
+        # num_input_tokens 是经过 dp padding 和 cudagraph padding 后的长度
         if self.supports_mm_inputs:
             mm_embeds, is_mm_embed = mm_embed_inputs or (None, None)
 
+            # 说明：Eagle3LlamaForCausalLM 的 embed_input_ids 并没有使用到
+            # multimodal_embeddings 和 is_multimodal 参数
             self.inputs_embeds[:num_tokens] = self.model.embed_input_ids(
                 self.input_ids[:num_tokens],
                 multimodal_embeddings=mm_embeds,
@@ -491,9 +508,12 @@ class SpecDecodeBaseProposer:
                 last_hidden_states = ret_hidden_states
                 hidden_states = last_hidden_states
             else:
+                # 说明：eagle3 的 Model 是 Eagle3LlamaForCausalLM，返回的是 (hidden_states, residual)
                 last_hidden_states, hidden_states = ret_hidden_states
 
+        # 说明：对应最后一个 token 位置的 hidden states
         sample_hidden_states = last_hidden_states[token_indices_to_sample]
+        # 说明：shape 为 [batch_size, vocab_size]
         logits = self.model.compute_logits(sample_hidden_states)
 
         # Early exit if there is only one draft token to be generated.
@@ -501,6 +521,7 @@ class SpecDecodeBaseProposer:
             draft_token_ids = logits.argmax(dim=-1)
             return draft_token_ids.view(-1, self.num_speculative_tokens)
 
+        # 说明：positions 是最后一个 token 的 position ids
         if self.uses_mrope:
             positions = self.mrope_positions[:, token_indices_to_sample]
         else:
@@ -520,6 +541,7 @@ class SpecDecodeBaseProposer:
             draft_token_ids_list = self.propose_tree(
                 batch_size=batch_size,
                 logits=logits,
+                # 说明：positions 的 shape 是 (batch_size,) or (3, batch_size) when M-RoPE is enabled
                 positions=positions,
                 hidden_states=hidden_states,
                 common_attn_metadata=common_attn_metadata,
@@ -528,6 +550,7 @@ class SpecDecodeBaseProposer:
             # [batch_size, num_tree_tokens]
             return torch.cat(draft_token_ids_list, dim=1)
 
+        # 说明：这里没有 keepdim 且没有进行 view，draft_token_ids 的 shape 是 (batch_size,)
         draft_token_ids = logits.argmax(dim=-1)
 
         if self.allowed_attn_types is not None and not isinstance(
@@ -561,6 +584,7 @@ class SpecDecodeBaseProposer:
             self.token_arange_np[: batch_size + 1]
         ).clone()
 
+        # 说明：前面的流程中 rejected tokens 并没有被移除，在这里进行调整
         # In padded drafter batch, we need to adjust the sequence lengths
         # to remove the "padding" (i.e. rejected tokens).
         # Only apply this adjustment when we have rejected tokens
@@ -576,6 +600,8 @@ class SpecDecodeBaseProposer:
             # cast to int32 is crucial when eagle model is compiled.
             # tensor.argmax() returns int64 by default.
             input_ids = draft_token_ids_list[-1].int()
+            # 说明：对于 positions 超过 max_model_len 的请求，对应的 position id 会被置为 0
+            # 每次循环相当于遍历一个 draft token，positions 加 1
             if self.uses_mrope:
                 positions += 1
                 # NOTE(woosuk): We should handle the case where the draft model
@@ -646,6 +672,7 @@ class SpecDecodeBaseProposer:
                 exceeds_max_model_len, PADDING_SLOT_ID
             )
 
+            # 说明：draft_index 从 1 开始到 num_speculative_tokens (= 1 + num_draft_tokens)
             # Rebuild attention metadata
             attn_metadata = attn_metadata_builder.build_for_drafting(  # type: ignore
                 common_attn_metadata=common_attn_metadata, draft_index=token_index + 1
@@ -843,6 +870,8 @@ class SpecDecodeBaseProposer:
     def model_returns_tuple(self) -> bool:
         return self.method not in ("mtp", "draft_model")
 
+    # 已阅
+    # 说明：准备每个请求的 next_token_id
     def prepare_next_token_ids_cpu(
         self,
         sampled_token_ids: list[list[int]],
@@ -876,6 +905,8 @@ class SpecDecodeBaseProposer:
         )
         return next_token_ids
 
+    # 已阅
+    # 说明：如果请求已被 discarded (指 requests should not be sampled)，则使用 backup token id
     def prepare_next_token_ids_padded(
         self,
         common_attn_metadata: CommonAttentionMetadata,
@@ -895,6 +926,7 @@ class SpecDecodeBaseProposer:
         num_reqs = gpu_input_batch.num_reqs
         self.backup_next_token_ids.np[:num_reqs] = np.array(
             [
+                # 说明：从 CachedRequestState 中获取对应位置的 token id
                 requests[gpu_input_batch.req_ids[i]].get_token_id(
                     common_attn_metadata.seq_lens_cpu[i].item()
                 )
@@ -934,6 +966,7 @@ class SpecDecodeBaseProposer:
 
         return next_token_ids, valid_sampled_tokens_count
 
+    # 已阅
     def prepare_inputs_padded(
         self,
         common_attn_metadata: CommonAttentionMetadata,
@@ -980,6 +1013,7 @@ class SpecDecodeBaseProposer:
             _seq_lens_cpu=common_attn_metadata._seq_lens_cpu,
             _num_computed_tokens_cpu=common_attn_metadata._num_computed_tokens_cpu,
             num_reqs=common_attn_metadata.num_reqs,
+            # 说明：所有 query 的 token 数量总和
             num_actual_tokens=total_num_tokens,
             max_query_len=new_query_len_per_req.max().item(),
             max_seq_len=common_attn_metadata.seq_lens_cpu.max().item(),
@@ -995,11 +1029,17 @@ class SpecDecodeBaseProposer:
             num_rejected_tokens_gpu,
         )
 
+    # 已阅
     def propose_tree(
         self,
         batch_size: int,
+        # 说明：这里 num_tokens 是 batch_size，因为 logits 是针对每个请求的下一个 token 进行预测的
         # [num_tokens, vocab_size]
         logits: torch.Tensor,
+        # 问题：从代码看，这里参数的 shape 是 [num_tokens] 或者 [3, num_tokens] when M-RoPE is enabled，
+        # 但如果是 [3, num_tokens]，那么后续代码 positions.view(batch_size, -1) 是无法进行广播的？
+        # 且这里的注释也是写的 [num_tokens]，所以是哪里限制了 positions 只能是 [num_tokens] 呢？
+        # 即当 uses_mrope 为 True 时，无法进入该函数？
         # [num_tokens]
         positions: torch.Tensor,
         # [num_tokens, hidden_size]
@@ -1014,6 +1054,7 @@ class SpecDecodeBaseProposer:
         ].get_metadata_builder()
         assert isinstance(tree_attn_metadata_builder, TreeAttentionMetadataBuilder)
 
+        # 说明：初始化为第一层的 draft 数量，后面逐层遍历时更新
         total_num_drafts = self.cu_drafts_per_level[0]
         level_num_drafts = total_num_drafts
         # Sample a draft token for each child at the tree root level.
@@ -1024,6 +1065,7 @@ class SpecDecodeBaseProposer:
             draft_token_ids = torch.topk(logits, num_children, dim=-1).indices.view(
                 batch_size, -1
             )
+        # 说明：每层草稿 token id 列表（shape 为 [batch_size, num_drafts]）的列表
         draft_token_ids_list = [draft_token_ids]
         draft_hidden_states = hidden_states.view(batch_size, 1, -1)
 
@@ -1037,14 +1079,21 @@ class SpecDecodeBaseProposer:
         tree_hidden_states = torch.empty(
             0, device=self.hidden_states.device, dtype=self.hidden_states.dtype
         )
+        # 说明：flattened_draft_positions 的 shape 是 [batch_size, len(self.tree_choices)]，
+        # 存储的是 draft token 的 position id
         # Precompute the draft token positions.
         flattened_draft_positions = (
+            # 问题：positions 的 view 的 shape 是 (batch_size, 1) 或者 (batch_size, 3) when M-RoPE is enabled，
+            # 但 (batch_size, 3) 无法和 tree_draft_pos_offsets 做广播，这里是不是只能是 (batch_size, 1)？
             positions.view(batch_size, -1) + self.tree_draft_pos_offsets[:batch_size, :]
         )
         tree_depth = len(self.cu_drafts_per_level)
         for level in range(tree_depth - 1):
+            # 说明：draft_positions 的 shape 是 (batch_size,)
             # Get draft positions for RoPE.
             draft_positions = positions + (level + 1)
+            # 说明：exceeds_max_model_len 的 shape 是 (batch_size,)
+            # 已经产生了 total_num_drafts 个草稿，所以总长度为 positions + total_num_drafts
             exceeds_max_model_len = (positions + total_num_drafts) >= self.max_model_len
             # Mask out the position ids that exceed the max model length.
             # Otherwise, we may get out-of-range error in RoPE.
@@ -1055,17 +1104,20 @@ class SpecDecodeBaseProposer:
             ).view(batch_size, -1)
 
             if level_num_drafts > 1:
+                # 说明：shape 变为 (batch_size, level_num_drafts)
                 # Repeat the positions for each draft at this level.
                 draft_positions = draft_positions.repeat_interleave(
                     level_num_drafts, dim=1
                 )
 
             if num_children > 1:
+                # 说明：shape 变为 (batch_size, num_children, hidden_size)
                 # Repeat draft hidden states for each child.
                 draft_hidden_states = draft_hidden_states.repeat_interleave(
                     num_children, dim=1
                 )
 
+            # 说明：当前层已经采样结束，拼接到一起
             # Concatenate the draft tokens, positions, and hidden states.
             tree_input_ids = torch.cat([tree_input_ids, draft_token_ids], dim=1)
             tree_positions = torch.cat([tree_positions, draft_positions], dim=1)
@@ -1073,14 +1125,20 @@ class SpecDecodeBaseProposer:
                 [tree_hidden_states, draft_hidden_states], dim=1
             )
 
+            # 说明：query_len 每次更新为截至目前的全部 draft 数量
             # Build new attention metadata for the next level of drafts.
             # This is necessary to support tree attention.
             query_len = total_num_drafts
             common_attn_metadata = replace(
                 common_attn_metadata,
+                # 说明：query_len 是每个请求截至目前的总 draft 数量，self.arange[: batch_size + 1] 是 [0, 1, 2, ..., batch_size]，
+                # 乘起来得到每个请求的 query_start_loc
                 query_start_loc=query_len * self.arange[: batch_size + 1],
+                # 说明：所有请求的 seq_lens 增加当前层的 draft 数量
                 seq_lens=common_attn_metadata.seq_lens + level_num_drafts,
+                # 说明：batch_size 个请求，每个请求最多 query_len 个 draft token，总的 token 数
                 num_actual_tokens=batch_size * query_len,
+                # 说明：max_seq_len 设置为 draft token 数量的累计和
                 max_query_len=query_len,
             )
             attn_metadata = tree_attn_metadata_builder.build_for_drafting(
@@ -1092,6 +1150,9 @@ class SpecDecodeBaseProposer:
             for layer_name in self.attn_layer_names:
                 per_layer_attn_metadata[layer_name] = attn_metadata
 
+            # 问题：上面 replace 的时候替换了 seq_lens，但是没有替换 max_seq_len，
+            # 这里为什么是用旧的 max_seq_len 和 max_model_len 做比较？
+            # 是应该写成 min(attn_metadata.max_seq_len + level_num_drafts, self.max_model_len) 吗？
             # Consider max model length.
             attn_metadata.max_seq_len = min(
                 attn_metadata.max_seq_len, self.max_model_len
@@ -1102,10 +1163,14 @@ class SpecDecodeBaseProposer:
 
             # Compute the slot mapping.
             block_size = tree_attn_metadata_builder.kv_cache_spec.block_size
+            # 说明：flattened_draft_positions 第 j 列存储的值为 positions + (j + 1)
             query_positions = flattened_draft_positions[:, level : level + query_len]
             block_numbers = query_positions // block_size
+            # 说明：block_ids 的 shape 是 (batch_size, query_len)
             block_ids = attn_metadata.block_table.gather(dim=1, index=block_numbers)
+            # 说明：slot_mapping 的 shape 是 (batch_size, query_len)
             slot_mapping = block_ids * block_size + query_positions % block_size
+            # 说明：长度超过 max_model_len 的请求，所有的 slot 都设置为 PADDING_SLOT_ID
             # Mask out the slot mappings that exceed the max model length.
             # Otherwise, the KV cache will be inadvertently updated with the
             # padding tokens.
@@ -1133,6 +1198,7 @@ class SpecDecodeBaseProposer:
                     num_input_tokens, attn_metadata.slot_mapping
                 ),
             ):
+                # 理解：这里没有判断 MTP，因为 TreeAttention 没有在 MTP 中使用
                 last_hidden_states, hidden_states = self.model(
                     input_ids=self.input_ids[:num_input_tokens],
                     positions=self.positions[:num_input_tokens],
@@ -1168,9 +1234,12 @@ class SpecDecodeBaseProposer:
             total_num_drafts = self.cu_drafts_per_level[level + 1]
         return draft_token_ids_list
 
+    # 已阅
+    # 说明：排除 rejected tokens 后，更新 metadata 中的 indices、len 等信息
     def prepare_inputs(
         self,
         common_attn_metadata: CommonAttentionMetadata,
+        # 说明：valid sampled tokens for each request
         sampled_token_ids: list[list[int]],
         num_draft_tokens: list[int],
     ) -> tuple[CommonAttentionMetadata, torch.Tensor]:
@@ -1197,6 +1266,8 @@ class SpecDecodeBaseProposer:
         #                 q1 + q2, q1 + q2 + 1, ..., q1 + q2 + q3 - n3 - 1]
 
         num_rejected_tokens = [
+            # 说明：n + 1 表示 draft token 数量 + 1（即 sampled token 数量），
+            # 减去 valid sampled token 数量即为 rejected token 数量
             n + 1 - len(sampled_token_ids[i]) if n > 0 else 0
             for i, n in enumerate(num_draft_tokens)
         ]
@@ -1245,6 +1316,7 @@ class SpecDecodeBaseProposer:
         old_query_start_locs_expanded = np.repeat(
             query_start_loc_cpu[:-1].numpy(), new_num_tokens_per_req_np
         )
+        # 说明：效果是每个 request 截去末尾 rejected token 后的 token indices
         # Final token indices are:
         # [0, 1,                                // req 1
         #  q1 + 0, q1 + 1, q1 + 2, q1 + 3,       // req 2
@@ -1586,6 +1658,8 @@ class SpecDecodeBaseProposer:
                     kwargs["hidden_states"] = self.hidden_states[:num_input_tokens]
                 self.model(**kwargs)
 
+    # 已阅
+    # 说明：所有 EAGLE 方法共享同一个 AttentionMetadataBuilder
     def _get_attention_metadata_builder(self) -> AttentionMetadataBuilder:
         """Find and return the attention metadata builders for EAGLE layers.
 
@@ -1611,6 +1685,8 @@ class SpecDecodeBaseProposer:
         )
         return builder
 
+    # 已阅
+    # 理解：对 use_aux_hidden_state 见 llama_eagle3.py 中的说明
     def _get_eagle3_use_aux_hidden_state_from_config(self) -> bool:
         """
         Some eagle3 heads (e.g., nvidia/gpt-oss-120b-Eagle3-v2) do not use auxiliary
@@ -1627,6 +1703,7 @@ class SpecDecodeBaseProposer:
             use_aux_hidden_state = eagle_config.get("use_aux_hidden_state", True)
         return use_aux_hidden_state
 
+    # 已阅
     def validate_same_kv_cache_group(self, kv_cache_config: KVCacheConfig) -> None:
         """
         Validate that all drafting layers belong to the same KVCacheGroup.
@@ -1650,16 +1727,22 @@ class SpecDecodeBaseProposer:
             == 1
         ), "All drafting layers should belong to the same kv cache group"
 
+    # 已阅
     def _pad_batch_across_dp(
         self,
         num_tokens_unpadded: int,
         num_tokens_padded: int,
     ) -> tuple[int, torch.Tensor]:
+        # 说明：coordinate_batch_across_dp 的 cudagraph_mode 参数的实际传参为 None，即并没有开启 cudagraph，
+        # 同时也忽略了方法的第三个返回值 synced_cudagraph_mode
         # TODO(Flechman): support DBO ubatching
         should_ubatch, num_toks_across_dp, _ = coordinate_batch_across_dp(
             num_tokens_unpadded=num_tokens_unpadded,
             parallel_config=self.vllm_config.parallel_config,
             allow_microbatching=False,
+            # 说明：如果 use_cuda_graph 为 True，则允许在 DP 上进行 padding
+            # 理解：padding 的目的是让每个 DP 上的 token 数量相同，从而可以使 cudagraph 一致
+            # 问题：跨 DP rank 保持一致的意义是什么？不同 DP rank 上的 cudagraph 不是单独捕获的吗？有 Graph 迁移的相关逻辑？
             allow_dp_padding=self.cudagraph_dispatcher.cudagraph_mode
             != CUDAGraphMode.NONE,
             num_tokens_padded=num_tokens_padded,
@@ -1671,6 +1754,7 @@ class SpecDecodeBaseProposer:
         num_tokens_dp_padded = num_tokens_padded
         if num_toks_across_dp is not None:
             num_tokens_dp_padded = int(num_toks_across_dp[self.dp_rank].item())
+        # 说明：num_toks_across_dp 的核心创建逻辑可以直接看 _post_process_dp_padding
         return num_tokens_dp_padded, num_toks_across_dp
 
 

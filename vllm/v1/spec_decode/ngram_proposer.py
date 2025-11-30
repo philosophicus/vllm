@@ -9,6 +9,8 @@ from numba import get_num_threads, jit, njit, prange, set_num_threads
 from vllm.config import VllmConfig
 
 
+# 已阅
+# 代码：https://github.com/apoorvumang/prompt-lookup-decoding/
 class NgramProposer:
     def __init__(self, vllm_config: VllmConfig):
         assert vllm_config.speculative_config is not None
@@ -19,6 +21,7 @@ class NgramProposer:
         self.min_n = vllm_config.speculative_config.prompt_lookup_min
         # Maximum length of the n-gram to match.
         self.max_n = vllm_config.speculative_config.prompt_lookup_max
+        # 说明：匹配到 n-gram 后，投机的后续 token 数量最大值
         # Number of tokens follow the match. If there are less than k
         # tokens follow the match, we will return the maximum amount of
         # tokens until the end.
@@ -29,15 +32,18 @@ class NgramProposer:
         # Pre-allocate buffers for numba batch propose.
         max_num_seqs = vllm_config.scheduler_config.max_num_seqs
         self.valid_ngram_draft = np.zeros((max_num_seqs, self.k), dtype=np.int32)
+        # 说明：每个 request 的实际 draft 长度
         self.valid_ngram_num_drafts = np.zeros((max_num_seqs), dtype=np.int32)
 
         # Threshold of total number of tokens in the batch to enable
         # multi-threading in numba batch propose.
         self.num_tokens_threshold = 8192
         tp_size = vllm_config.parallel_config.tensor_parallel_size
+        # 说明：CPU 逻辑核心数；numba 线程并行的默认线程数等于 CPU 逻辑核心数
         cpu_count = os.cpu_count()
         # Max number of threads for numba parallel processing.
         if cpu_count:
+            # 说明：incl = include
             # Divide by 2 to use physical cores
             # and not logical cores (hyper-threading).
             # Cap the number of threads to 8 to avoid using too many threads
@@ -46,12 +52,19 @@ class NgramProposer:
             # TODO(ekagra-ranjan): bump up the cap from 1 to 8
             # when TP parallelization for ngram is implemented.
             self.num_numba_thread_available = min(1, (cpu_count // 2))
+            # 说明：上面 num_numba_thread_available 的最大值是 1，
+            # 这里只有当 tp_size 为 1 时才有有效值 1，否则值为 0；
+            # 即目前 numba 并行线程数最大为 1；
             # Divide by tp_size to ensure each tensor parallel rank
             # has some threads since all ranks will run this.
             self.num_numba_thread_available //= tp_size
         else:
             self.num_numba_thread_available = 1
 
+        # 说明：Numba JIT compilation 步骤
+        # 1. 捕获函数解释器字节码；静态类型推断；
+        # 2. 生成 LLVM IR；优化 LLVM IR（循环展开；常量折叠；数字访存优化；死代码消除）；
+        # 3. 编译生成原生机器码；缓存编译结果
         # Trigger Numba JIT compilation for N-gram proposer.
         # This usually takes less than 1 second.
         self.propose(
@@ -96,11 +109,14 @@ class NgramProposer:
             # may slow down due to overhead.
             total_tokens = np.sum(num_tokens_no_spec)
             if total_tokens >= self.num_tokens_threshold:
+                # 说明：至少是 1 个线程
                 final_num_threads = max(
                     1, min(self.num_numba_thread_available, num_ngram_requests)
                 )
                 set_num_threads(final_num_threads)
             else:
+                # 说明：参考上面注释 "If total tokens is small, using multiple threads
+                # may slow down due to overhead"
                 set_num_threads(1)
 
             batch_propose_numba(
@@ -131,6 +147,7 @@ class NgramProposer:
     def propose(
         self,
         sampled_token_ids: list[list[int]],
+        # 说明：shape (batch_size,) representing the number of tokens without speculative tokens for each request
         num_tokens_no_spec: np.ndarray,
         token_ids_cpu: np.ndarray,
         slot_mappings: dict[str, torch.Tensor]
@@ -142,6 +159,7 @@ class NgramProposer:
         for i, sampled_ids in enumerate(sampled_token_ids):
             num_sampled_ids = len(sampled_ids)
             if not num_sampled_ids:
+                # 说明：还没开始 decoding，没有新采样的 token id
                 # Skip speculative decoding.
                 continue
 
@@ -166,6 +184,8 @@ class NgramProposer:
         pass
 
 
+# 已阅
+# 说明：通过 parallel=True 参数开启多线程
 @njit(parallel=True)
 def batch_propose_numba(
     valid_ngram_requests: list,
@@ -195,6 +215,9 @@ def batch_propose_numba(
             valid_ngram_draft[idx, : drafter_output.shape[0]] = drafter_output
 
 
+# 已阅
+# 说明：@jit 是 Numba 最基础的装饰器，默认开启单线程加速；nopython=True 强制进入纯编译模式，
+# 避免回退到解释执行，等价于 @njit
 @jit(nopython=True)
 def _find_longest_matched_ngram_and_propose_tokens(
     origin_tokens: np.ndarray,
@@ -219,11 +242,15 @@ def _find_longest_matched_ngram_and_propose_tokens(
     if k <= 0:
         return np.empty((0,), dtype=origin_tokens.dtype)
 
+    # 说明：翻转 token 后，目标变为找到匹配最长【前缀】的最右侧的 ngram
+    # 优先是更长的匹配，然后是更靠右的位置
     # Flip tokens, and the goal become to find longest ngram
     # on the rightmost position which matches the prefix with
     # length [min_n, max_n] (inclusive).
     tokens = origin_tokens[::-1]
 
+    # 理解：lps = longest prefix suffix
+    # 说明：lps 每个位置存储的信息是使得前后缀相等的最长前缀长度，（i+1）表示字符串长度
     # Longest prefix (not including itself) which is a suffix of
     # the current position.
     #   lps[i] = max{v, where tokens[0:v] == tokens[i+1-v:i+1]}
@@ -235,6 +262,8 @@ def _find_longest_matched_ngram_and_propose_tokens(
     longest_ngram = 0
     position = 0
 
+    # 说明：经典 KMP 算法变种
+    # 说明：prev_lps 表示当前匹配的最长前缀长度
     # lps[0] always equal to 0, we start with index 1
     prev_lps = 0
     i = 1

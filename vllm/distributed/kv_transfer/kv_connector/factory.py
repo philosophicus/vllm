@@ -24,9 +24,11 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+# 已阅
 class KVConnectorFactory:
     _registry: dict[str, Callable[[], type[KVConnectorBase]]] = {}
 
+    # 已阅
     @classmethod
     def register_connector(cls, name: str, module_path: str, class_name: str) -> None:
         """Register a connector with a lazy-loading module and class name."""
@@ -39,6 +41,7 @@ class KVConnectorFactory:
 
         cls._registry[name] = loader
 
+    # 已阅
     @classmethod
     def create_connector(
         cls,
@@ -53,6 +56,7 @@ class KVConnectorFactory:
             kv_transfer_config
         )
 
+        # 说明：HMA = Hybrid Memory Manager
         # check if the connector supports HMA
         hma_enabled = not config.scheduler_config.disable_hybrid_kv_cache_manager
         if hma_enabled and not supports_hma(connector_cls):
@@ -81,6 +85,7 @@ class KVConnectorFactory:
             # New signature: __init__(self, vllm_config, role, kv_cache_config)
             return connector_cls(config, role, kv_cache_config)
 
+    # 已阅
     @classmethod
     def get_connector_class_by_name(
         cls, connector_name: str
@@ -99,6 +104,7 @@ class KVConnectorFactory:
             raise ValueError(f"Connector '{connector_name}' is not registered.")
         return cls._registry[connector_name]()
 
+    # 已阅
     @classmethod
     def _get_connector_class_with_compat(
         cls, kv_transfer_config: "KVTransferConfig"
@@ -128,8 +134,11 @@ class KVConnectorFactory:
                     "Please update to include kv_cache_config as the second argument.",
                     connector_cls.__name__,
                 )
+        # 说明：compat_sig 表示是否使用兼容性签名，即 __init__ 方法是否支持 kv_cache_config 参数；
+        # 如果 compat_sig 为 True，则表示使用旧的签名，不支持 kv_cache_config 参数；
         return connector_cls, compat_sig
 
+    # 已阅
     @classmethod
     def get_connector_class(
         cls, kv_transfer_config: "KVTransferConfig"

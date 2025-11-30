@@ -133,6 +133,7 @@ class ScalarType:
             else:
                 return 0
 
+    # 已阅
     @functools.cached_property
     def id(self) -> int:
         """

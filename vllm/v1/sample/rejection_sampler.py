@@ -26,6 +26,8 @@ GREEDY_TEMPERATURE: tl.constexpr = 0
 MAX_SPEC_LEN = 128
 
 
+# 已阅
+# 说明：bonus tokens 是通过 Sampler 类的 sample 方法产生，不经过拒绝采样器采样，这样可以更灵活地控制 bonus token 的采样方式
 class RejectionSampler(nn.Module):
     """
     The implementation strictly follows the algorithm described in
@@ -97,6 +99,7 @@ class RejectionSampler(nn.Module):
         # logits tensor. This means any in-place operations on bonus_logits
         # won't affect the original logits tensor.
         assert logits is not None
+        # 说明：创建新的张量，与 logits 不共享存储
         bonus_logits = logits[bonus_logits_indices]
         bonus_sampler_output = self.sampler(
             logits=bonus_logits,
@@ -113,6 +116,7 @@ class RejectionSampler(nn.Module):
         )
         bonus_token_ids = bonus_sampler_output.sampled_token_ids
 
+        # 说明：target_logits_indices 是排除 bonus token 后的 sampled tokens 对应的 logits 位置
         # Just like `bonus_logits`, `target_logits` is a new tensor with
         # separate storage from the original `logits` tensor. Therefore,
         # it is safe to update `target_logits` in place.
@@ -121,6 +125,7 @@ class RejectionSampler(nn.Module):
         raw_target_logits = raw_target_logits.to(torch.float32)
         target_logits = raw_target_logits
         if not self.is_processed_logprobs_mode:
+            # 说明：需要返回原始的 logits 或 logprobs
             # Clone raw_target_logits before applying processors to preserve
             # the original raw logits for logprobs computation, since
             # apply_logits_processors modifies the tensor in-place.
@@ -128,6 +133,7 @@ class RejectionSampler(nn.Module):
         target_logits = self.apply_logits_processors(
             target_logits, sampling_metadata, metadata
         )
+        # 说明：对 logits 应用采样约束条件，如温度、top-k、top-p 等
         # [num_tokens, vocab_size]
         # NOTE(woosuk): `target_logits` can be updated in place inside the
         # `apply_sampling_constraints` function.
@@ -164,15 +170,19 @@ class RejectionSampler(nn.Module):
             logprobs_tensors=logprobs_tensors,
         )
 
+    # 已阅
     def _get_logprobs_tensors(
         self,
+        # 说明：返回 max_num_logprobs + 1 个 logprobs
         max_num_logprobs: int,
         metadata: SpecDecodeMetadata,
         logits: torch.Tensor,
         target_logits: torch.Tensor,
         bonus_logits: torch.Tensor,
+        # 说明：[batch_size, max_spec_len + 1]；使用 PLACEHOLDER_TOKEN_ID 做填充
         sampled_token_ids: torch.Tensor,
     ) -> LogprobsTensors:
+        # 说明：[2, 5, 6] -> [0, 2, 5]
         cu_num_sampled_tokens = torch.zeros_like(metadata.cu_num_sampled_tokens)
         cu_num_sampled_tokens[1:] = metadata.cu_num_sampled_tokens[:-1]
 
@@ -183,6 +193,8 @@ class RejectionSampler(nn.Module):
         final_logits[target_logits_indices] = target_logits.to(torch.float32)
         final_logits[bonus_logits_indices] = bonus_logits.to(torch.float32)
 
+        # 说明：这里生成的不是最终采样结果的 logprobs，而是 accepted tokens 的 logprobs；
+        # 还需要经过 parse_output 过滤才能得到最终的结果
         # NOTE: To avoid cpu-gpu synchronization, we now simply compute indices for
         # all draft tokens, including the rejected ones. The rejected tokens will
         # be filtered out in the `parse_output`.
@@ -192,10 +204,15 @@ class RejectionSampler(nn.Module):
             device=logit_start_indices.device,
             dtype=logit_start_indices.dtype,
         )
+        # 说明：从每个起始位置开始，计算 max_spec_len + 1 个位置的索引；
+        # 代价是可能会出现大量大量重复的索引，进而导致 accepted_logprobs 和 gather_logprobs 计算冗余，
+        # 好处是避免 CPU-GPU 同步
+        # 技巧
         accepted_logit_indices = (
             logit_start_indices.unsqueeze(1) + offsets.unsqueeze(0)
         ).flatten()
         accepted_logit_indices.clamp_(max=final_logits.shape[0] - 1)
+        # 说明：accepted_tokens 最终包含合法的采样 token 和 0 值
         accepted_tokens = sampled_token_ids.clone().flatten()
         # we replace rejected token ids with 0 to avoid gather_logprobs error
         accepted_tokens[accepted_tokens == PLACEHOLDER_TOKEN_ID] = 0
@@ -207,12 +224,14 @@ class RejectionSampler(nn.Module):
             if self.is_logits_logprobs_mode
             else self.sampler.compute_logprobs(accepted_logits)
         )
+        # 说明：无效计算是用 0 值的 accepted token id 去 gather logprobs
         return self.sampler.gather_logprobs(
             accepted_logprobs,
             max_num_logprobs,
             accepted_tokens.to(torch.int64),
         )
 
+    # 已阅
     @staticmethod
     def parse_output(
         output_token_ids: torch.Tensor,
@@ -243,6 +262,7 @@ class RejectionSampler(nn.Module):
             filtered_tensors = logprobs_tensors.filter(valid_mask.flatten())
             output_logprobs = filtered_tensors.tolists(cu_num_tokens)
 
+        # 说明：丢弃某些请求的所有输出
         if len(discard_req_indices) > 0:
             valid_mask[discard_req_indices] = False
         outputs = [
@@ -250,6 +270,8 @@ class RejectionSampler(nn.Module):
         ]
         return outputs, output_logprobs
 
+    # 已阅
+    # 说明：对 logits 应用 penalties, allowed token ids, bad words 过滤
     def apply_logits_processors(
         self,
         logits: torch.Tensor,
@@ -277,6 +299,9 @@ class RejectionSampler(nn.Module):
             repeat_indices = repeat_indices_cpu.to(
                 device=logits.device, non_blocking=True
             )
+            # 说明：对比 Sampler 的 apply_logits_processors 方法，这里是先应用 penalties，
+            # 再应用 allowed token ids，最后应用 bad words exclusion；Sampler 中是先应用 allowed token ids，
+            # 然后应用 bad words exclusion，再应用 logits processors，最后应用 penalties
             logits = self.apply_penalties(
                 logits, sampling_metadata, metadata, repeat_indices, output_token_ids
             )
@@ -340,6 +365,9 @@ class RejectionSampler(nn.Module):
         return result
 
 
+# 已阅
+# 说明：返回的 shape 是 [batch_size, max_spec_len + 1]，每个请求的 token ids 列表；
+# 使用 PLACEHOLDER_TOKEN_ID 做填充
 def rejection_sample(
     # [num_tokens]
     draft_token_ids: torch.Tensor,
@@ -348,8 +376,10 @@ def rejection_sample(
     max_spec_len: int,
     # [batch_size]
     cu_num_draft_tokens: torch.Tensor,
+    # 说明：草稿模型的概率分布
     # [num_tokens, vocab_size]
     draft_probs: torch.Tensor | None,
+    # 说明：目标模型的概率分布
     # [num_tokens, vocab_size]
     target_logits: torch.Tensor,
     # [batch_size, 1]
@@ -441,6 +471,8 @@ def rejection_sample(
     return output_token_ids
 
 
+# 已阅
+# 说明：对 logits 应用采样约束条件，如温度、top-k、top-p 等
 def apply_sampling_constraints(
     logits: torch.Tensor,  # [num_tokens, vocab_size]
     cu_num_draft_tokens: torch.Tensor,  # [batch_size]
@@ -499,6 +531,7 @@ def apply_sampling_constraints(
     return apply_top_k_top_p(logits, top_k, top_p)
 
 
+# 已阅
 def expand_batch_to_tokens(
     x: torch.Tensor,  # [batch_size]
     cu_num_tokens: torch.Tensor,  # [batch_size]
@@ -539,6 +572,9 @@ def expand_batch_to_tokens(
     return expanded_x
 
 
+# 已阅
+# 说明：为 num_tokens 个 token 生成 uniform random values in the range [0, 1)；
+# 如果对应的请求有 seed，则使用该 seed 重新生成随机数
 def generate_uniform_probs(
     num_tokens: int,
     num_draft_tokens: list[int],
@@ -594,6 +630,8 @@ def generate_uniform_probs(
     return uniform_probs
 
 
+# 已阅
+# 说明：为每个位置采样 recovered token，即如果当前位置的 draft token 被拒绝，则使用该 token
 def sample_recovered_tokens(
     max_spec_len: int,
     num_draft_tokens: list[int],
@@ -638,6 +676,8 @@ def sample_recovered_tokens(
     return recovered_token_ids
 
 
+# 已阅
+# 说明：对于 greedy sampling 情况，通过比较 draft token id 和 target token id 是否相同，决定是否拒绝
 # NOTE(woosuk): Avoid specialization to prevent unnecessary recompilation.
 @triton.jit(do_not_specialize=["max_spec_len"])
 def rejection_greedy_sample_kernel(
@@ -666,6 +706,7 @@ def rejection_greedy_sample_kernel(
         if not rejected:
             draft_token_id = tl.load(draft_token_ids_ptr + start_idx + pos)
             target_argmax_id = tl.load(target_argmax_ptr + start_idx + pos)
+            # 说明：先 store 再判断，至少有一个 target token 被接受
             tl.store(
                 output_token_ids_ptr + req_idx * (max_spec_len + 1) + pos,
                 target_argmax_id,
@@ -683,6 +724,8 @@ def rejection_greedy_sample_kernel(
         )
 
 
+# 已阅
+# 说明：论文中的 speculative sampling 算法实现
 # NOTE(woosuk): Avoid specialization to prevent unnecessary recompilation.
 @triton.jit(do_not_specialize=["max_spec_len"])
 def rejection_random_sample_kernel(
@@ -745,6 +788,8 @@ def rejection_random_sample_kernel(
         )
 
 
+# 已阅
+# 说明：将 [batch_size] 张量扩展为 [num_tokens] 张量
 # NOTE(woosuk): Avoid specialization to prevent unnecessary recompilation.
 @triton.jit(do_not_specialize=["replace_from", "replace_to"])
 def expand_kernel(
@@ -769,6 +814,8 @@ def expand_kernel(
     tl.store(output_ptr + start_idx + offset, src_val, mask=offset < num_tokens)
 
 
+# 已阅
+# 说明：为每个位置采样 recovered token，即如果当前位置的 draft token 被拒绝，则使用该 token
 @triton.jit
 def sample_recovered_tokens_kernel(
     output_token_ids_ptr,  # [num_tokens]
@@ -794,6 +841,8 @@ def sample_recovered_tokens_kernel(
     vocab_offset = tl.arange(0, PADDED_VOCAB_SIZE)
     if NO_DRAFT_PROBS:
         draft_token_id = tl.load(draft_token_ids_ptr + start_idx + pos)
+        # 说明：直接使用 target_probs 作为 prob，但 draft_token_id 位置的概率设为 0，
+        # 避免被采样
         prob = tl.load(
             target_probs_ptr + (start_idx + pos) * vocab_size + vocab_offset,
             mask=((vocab_offset < vocab_size) & (vocab_offset != draft_token_id)),
@@ -819,5 +868,8 @@ def sample_recovered_tokens_kernel(
         mask=vocab_offset < vocab_size,
         other=float("-inf"),
     )
+    # 说明：技巧，gumbel sampling，通过 argmax 实现采样
+    # Gumbel 分布可以通过对指数分布取负对数直接生成，这是 Gumbel-Softmax 技巧的数学基础；
+    # 同时，Gumbel 分布也是对均匀分布取两次负对数生成的
     recovered_id = tl.argmax(prob / q, axis=-1)
     tl.store(output_token_ids_ptr + start_idx + pos, recovered_id)

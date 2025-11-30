@@ -51,6 +51,7 @@ def as_list(maybe_list: Iterable[T]) -> list[T]:
     return maybe_list if isinstance(maybe_list, list) else list(maybe_list)
 
 
+# 已阅
 def is_list_of(
     value: object,
     typ: type[T] | tuple[type[T], ...],

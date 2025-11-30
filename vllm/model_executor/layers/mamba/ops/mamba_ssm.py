@@ -27,6 +27,8 @@ else:
         return dt
 
 
+# 已阅
+# 说明：根据不同值进行特化 specialization
 @triton.heuristics({"HAS_DT_BIAS": lambda args: args["dt_bias_ptr"] is not None})
 @triton.heuristics({"HAS_D": lambda args: args["D_ptr"] is not None})
 @triton.heuristics({"HAS_Z": lambda args: args["z_ptr"] is not None})
@@ -43,6 +45,7 @@ else:
 @triton.heuristics(
     {"BLOCK_SIZE_DSTATE": lambda args: triton.next_power_of_2(args["dstate"])}
 )
+# 说明：不要对 N 做特化
 @triton.jit(do_not_specialize=["N"])
 def _selective_scan_update_kernel(
     # Pointers to matrices
@@ -66,6 +69,7 @@ def _selective_scan_update_kernel(
     nheads,
     dim,
     dstate,
+    # 说明：每组 head 数
     nheads_ngroups_ratio,
     # Strides
     stride_state_batch,
@@ -113,8 +117,11 @@ def _selective_scan_update_kernel(
     IS_VARLEN: tl.constexpr,
     BLOCK_SIZE_DSTATE: tl.constexpr,
 ):
+    # 说明：head dimension，即 P
     pid_m = tl.program_id(axis=0)
+    # 说明：batch dimension，即 B
     pid_b = tl.program_id(axis=1)
+    # 说明：num_heads dimension，即 H
     pid_h = tl.program_id(axis=2)
 
     if IS_VARLEN:
@@ -136,16 +143,21 @@ def _selective_scan_update_kernel(
     if HAS_STATE_BATCH_INDICES:
         if IS_SPEC_DECODING:
             num_accepted = tl.load(num_accepted_tokens_ptr + pid_b).to(tl.int64)
+            # 说明：从 accepted tokens 末尾开始加载 state
             init_token_idx = tl.maximum(num_accepted - 1, 0)
         else:
             init_token_idx = 0
 
         dst_state_batch_indices_ptr += pid_b * stride_dst_state_indices_batch
+        # 说明：这里只确定了 not IS_SPEC_DECODING 时的目标状态地址 dst_state_ptr
         if not IS_SPEC_DECODING:
             dst_state_batch_idx = tl.load(
                 dst_state_batch_indices_ptr
                 + init_token_idx * stride_dst_state_indices_T
             ).to(tl.int64)
+            # 说明：dst_state_ptr 仅应用于 not IS_SPEC_DECODING 的情况
+            # state 的 shape 为 (batch, nheads, dim, dstate)，这里有了 batch 和 head 维度，
+            # 还缺少 dim 和 dstate 维度
             dst_state_ptr = state_ptr + (
                 dst_state_batch_idx * stride_state_batch + pid_h * stride_state_head
             )
@@ -154,25 +166,38 @@ def _selective_scan_update_kernel(
             pid_b * stride_state_indices_batch + init_token_idx * stride_state_indices_T
         )
         state_batch_idx = tl.load(state_batch_indices_ptr).to(tl.int64)
+        # 说明：state_ptr 后续代表输入状态的地址，缺少 dim 和 dstate 维度
         state_ptr += state_batch_idx * stride_state_batch + pid_h * stride_state_head
     else:
+        # 说明：没有 state_batch_indices，输入状态的地址和输出状态的地址相同，
+        # 且 state 的 batch 维度和 head 维度分别由 pid_b 和 pid_h 定义，缺少 dim 和 dstate 维度
         dst_state_ptr = (
             state_ptr + pid_b * stride_state_batch + pid_h * stride_state_head
         )
         state_ptr += pid_b * stride_state_batch + pid_h * stride_state_head
 
+    # 说明：x[bos, pid_h] 的地址，缺最后的 dim 维度
     x_ptr += bos * stride_x_batch + pid_h * stride_x_head
+    # 说明：dt[bos, pid_h] 的地址，缺最后的 dim 维度
     dt_ptr += bos * stride_dt_batch + pid_h * stride_dt_head
     if HAS_DT_BIAS:
+        # 说明：dt_bias[pid_h] 的地址，缺最后的 dim 维度
         dt_bias_ptr += pid_h * stride_dt_bias_head
+    # 说明：A[pid_h] 的地址，缺最后的 dim 和 dstate 维度
     A_ptr += pid_h * stride_A_head
+    # 说明：B[bos, pid_h // nheads_ngroups_ratio] 的地址，缺最后的 dstate 维度
     B_ptr += bos * stride_B_batch + (pid_h // nheads_ngroups_ratio) * stride_B_group
+    # 说明：C[bos, pid_h // nheads_ngroups_ratio] 的地址，缺最后的 dstate 维度
     C_ptr += bos * stride_C_batch + (pid_h // nheads_ngroups_ratio) * stride_C_group
     if HAS_Z:
+        # 说明：z[bos, pid_h] 的地址，缺最后的 dim 维度
         z_ptr += bos * stride_z_batch + pid_h * stride_z_head
+    # 说明：out[bos, pid_h] 的地址，缺最后的 dim 维度
     out_ptr += bos * stride_out_batch + pid_h * stride_out_head
 
+    # 说明：dim 维度，即 head dimension
     offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    # 说明：dstate 维度
     offs_n = tl.arange(0, BLOCK_SIZE_DSTATE)
     state_ptrs = state_ptr + (
         offs_m[:, None] * stride_state_dim + offs_n[None, :] * stride_state_dstate
@@ -190,10 +215,12 @@ def _selective_scan_update_kernel(
     if HAS_DT_BIAS:
         dt_bias_ptrs = dt_bias_ptr + offs_m * stride_dt_bias_dim
     if HAS_D:
+        # 说明：D[pid_h] 的地址，缺最后的 dim 维度
         D_ptr += pid_h * stride_D_head
         D_ptrs = D_ptr + offs_m * stride_D_dim
     A_ptrs = A_ptr + offs_m[:, None] * stride_A_dim + offs_n[None, :] * stride_A_dstate
 
+    # 说明：batch 维度做遍历
     for i_t in range(seq_len):
         x_ptrs = x_ptr + offs_m * stride_x_dim
         dt_ptrs = dt_ptr + offs_m * stride_dt_dim
@@ -215,6 +242,8 @@ def _selective_scan_update_kernel(
                 mask=(offs_m[:, None] < dim) & (offs_n[None, :] < dstate),
                 other=0.0,
             ).to(tl.float32)
+            # 说明：A 的 shape 是 (dim, dstate), dt 的 shape 是 (dim, )；
+            # 结果的 shape 是 (dim, dstate)
             dA = tl.exp(A * dt[:, None])
         else:
             dt = tl.load(dt_ptr).to(tl.float32)
@@ -232,10 +261,18 @@ def _selective_scan_update_kernel(
         if HAS_Z:
             z = tl.load(z_ptrs, mask=offs_m < dim, other=0.0).to(tl.float32)
 
+        # 说明：not TIE_HDIM 时，(1, dstate) * (dim, 1) -> (dim, dstate)；
+        # TIE_HDIM 时，B 的 shape 是 (dstate,)，dt 是 scalar，结果也是 (dstate,)
         dB = B[None, :] * dt[:, None] if not TIE_HDIM else B * dt
+        # 说明：state 的 shape 是 (dim, dstate)，x 的 shape 是 (dim,)，
+        # - not TIE_HDIM 时，dA 和 dB 的 shape 都是 (dim, dstate)，结果的 shape 是 (dim, dstate)；
+        # - TIE_HDIM 时，dA 的 shape 是 scalar，dB 的 shape 是 (dstate,)，结果的 shape 也是 (dim, dstate)；
+        # 结果 state 的 shape 是 (dim, dstate)
         state = state * dA + dB * x[:, None]
 
         if IS_SPEC_DECODING:
+            # 说明：每个 token 的 state 都要保存到目标位置
+            # 说明：token 对应的存储 dst_index 的地址
             dst_idx_ptr = dst_state_batch_indices_ptr + i_t * stride_dst_state_indices_T
             token_dst_idx = tl.load(dst_idx_ptr).to(tl.int64)
             if token_dst_idx != pad_slot_id:
@@ -247,6 +284,7 @@ def _selective_scan_update_kernel(
                     + offs_n[None, :] * stride_state_dstate
                 )
                 tl.store(
+                    # 说明：token_dst_ptrs.dtype.element_ty 表示指针指向的元素类型
                     token_dst_ptrs, state.to(token_dst_ptrs.dtype.element_ty), mask=mask
                 )
 
@@ -266,10 +304,13 @@ def _selective_scan_update_kernel(
             z_ptr += stride_z_batch
 
     if not IS_SPEC_DECODING:
+        # 说明：只保存最后一个 token 的 state
         tl.store(dst_state_ptrs, state.to(dst_state_ptrs.dtype.element_ty), mask=mask)
 
 
+# 已阅
 def selective_state_update(
+    # 说明：selective_scan_fn 中使用的 state 的 shape 为 (batch, dim, dstate)
     state,
     x,
     dt,
@@ -398,6 +439,8 @@ def selective_state_update(
     # Default
     BLOCK_SIZE_M, num_warps = 4, 8
 
+    # 说明：根据 state dimension 的值调整 BLOCK_SIZE_M 和 num_warps，优化性能；
+    # state dimension 值越大，head dimension 越小，P * N <= 512
     if dstate <= 16:
         BLOCK_SIZE_M, num_warps = 32, 4
     elif dstate <= 32:
@@ -412,10 +455,15 @@ def selective_state_update(
         elif dstate <= 128:
             BLOCK_SIZE_M, num_warps = 4, 4
 
+    # 说明：判断是否绑定/共享 H 维度，即 num_heads 维度
     tie_hdim = (
+        # 说明：A 的 dstate 维度共享
         A.stride(-1) == 0
+        # 说明：A 的 dim 维度共享
         and A.stride(-2) == 0
+        # 说明：dt 的 dim 维度共享
         and dt.stride(-1) == 0
+        # 说明：dt_bias 的 dim 维度共享
         and dt_bias.stride(-1) == 0
     )
     with torch.cuda.device(x.device.index):
@@ -478,14 +526,19 @@ def selective_state_update(
         )
 
 
+# 已阅
 def selective_scan_fn(
     u,
+    # 说明：kernel 中使用的 shape 为 (batch, dim, dstate)
     ssm_states,
     delta,
+    # 说明：shape 为 [intermediate_size // tp_size, ssm_state_size]
     A,
+    # 说明：B, C shape 为 [dstate, total_length]
     B,
     C,
     D=None,
+    # 说明：实参为 gate_p
     z=None,
     delta_bias=None,
     delta_softplus=False,
@@ -563,6 +616,7 @@ def selective_scan_fn(
     if B.dim() == 3 and query_start_loc is None:
         B = B.unsqueeze(1)
     if B.dim() == 2 and query_start_loc is not None:
+        # 说明：B, C shape 变为 [1, dstate, total_length]
         B = B.unsqueeze(0)
     if C.dim() == 3 and query_start_loc is None:
         C = C.unsqueeze(1)
@@ -573,6 +627,7 @@ def selective_scan_fn(
         u,
         delta,
         A,
+        # 说明：B, C shape 变为 [1, dstate, total_length]
         B,
         C,
         D,
@@ -590,6 +645,8 @@ def selective_scan_fn(
         initial_state_idx,
     )
 
+    # 说明：delta 一定会被 inplace 写入；存在 gate 机制的情况下，z 也会被写入；
+    # 所以 z 不为 None 时，输出以 z 为准；z 为 None 时，输出以 delta 为准
     if z is None:
         return delta  # output written inplace to delta
     else:

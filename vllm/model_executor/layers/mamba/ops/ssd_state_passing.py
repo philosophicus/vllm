@@ -11,6 +11,9 @@ import torch
 from vllm.triton_utils import tl, triton
 
 
+# 已阅
+# 说明：计算 Center Factors 的 kernel，输入是每个 chunk 通过计算 Right Factors 得到的 final states 和
+# 每个 chunk 的衰减系数的累积和 dA_cumsum，输出是每个 chunk 的 actual final states
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK_SIZE": 64}),
@@ -25,13 +28,20 @@ from vllm.triton_utils import tl, triton
 @triton.jit
 def _state_passing_fwd_kernel(
     # Pointers to matrices
+    # 说明：states 的 shape 是 (nchunks, nheads, dim)，这里及后面的 dim = headdim *  dstate
     states_ptr,
+    # 说明：out 的 shape 是 (nchunks, nheads, dim)
     out_ptr,
+    # 说明：dA_cumsum 的 shape 是 (nheads, nchunks, chunk_size)
     dA_cs_ptr,
+    # 说明：initial_states 的 shape 是 (batch, nheads, headdim * dstate)，
+    # 表示每个序列的初始状态（用于 chucked prefill），如果没有提供，则默认为 0
     initstates_ptr,
+    # 说明：seq_idx 的 shape 是 (nchunks,)，表示每个 chunk 对应的序列索引
     seq_idx_ptr,
     cu_chunk_seqlens_ptr,
     # Matrix dimensions
+    # 说明：headdim * dstate
     dim: tl.constexpr,
     nchunks,
     seqlen,
@@ -54,7 +64,10 @@ def _state_passing_fwd_kernel(
     HAS_INITSTATES: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
+    # 说明：一个 block 处理一个 head 的 BLOCK_SIZE 个维度
+    # 说明：pid_h 是 head 维度的索引
     pid_h = tl.program_id(axis=1)
+    # 说明：pid_m 是 dim 维度的索引，对应 BLOCK_SIZE 个维度
     pid_m = tl.program_id(axis=0)
 
     states_ptr += pid_h * stride_states_head
@@ -66,6 +79,8 @@ def _state_passing_fwd_kernel(
     out_ptrs = out_ptr + offs_m * stride_out_dim
 
     if HAS_INITSTATES:
+        # 说明：此时 sequence_idx 是 0，与下面的 prev_seq_idx = 0 是一个作用，
+        # 初始化为整个 varlen 中第一个序列的初始状态 
         initstates_ptrs = (
             initstates_ptr
             + pid_h * stride_initstates_head
@@ -97,6 +112,9 @@ def _state_passing_fwd_kernel(
                 states = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
         prev_seq_idx = seq_idx
+        # 说明：当前 block 的 actual final state = 
+        # 当前 block 末尾累积的衰减系数 exp(dA_cumsum) * 前一个 block 的 actual final state + 当前 block 的 final state；
+        # 这里是最朴素的求 cumprodsum 的做法 h_t = a_t h_{t-1} + b_t，逐个时间步骤依次展开
         states = tl.exp(dA_cs) * states + new_states
         tl.store(out_ptrs, states, mask=offs_m < dim)
 
@@ -105,6 +123,9 @@ def _state_passing_fwd_kernel(
         out_ptrs += stride_out_chunk
 
 
+# 已阅
+# 说明：计算 Center Factors 的 kernel，输入是每个 chunk 通过计算 Right Factors 得到的 final states 和
+# 每个 chunk 的衰减系数的累积和 dA_cumsum，输出是每个 chunk 的 actual final states
 def _state_passing_fwd(
     states,
     dA_cumsum,

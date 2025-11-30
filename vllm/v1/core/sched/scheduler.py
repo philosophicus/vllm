@@ -66,6 +66,7 @@ class Scheduler(SchedulerInterface):
         vllm_config: VllmConfig,
         kv_cache_config: KVCacheConfig,
         structured_output_manager: StructuredOutputManager,
+        # 说明：能支持一轮 pcp 和 dcp 的整体 block_size
         block_size: int,
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
         include_finished_set: bool = False,
@@ -271,6 +272,8 @@ class Scheduler(SchedulerInterface):
                 vllm_config=self.vllm_config,
             )
 
+    # 已阅
+    # 说明：对 num_new_tokens 数量进行调整以实现 align
     def _mamba_block_aligned_split(
         self,
         request: Request,
@@ -291,15 +294,18 @@ class Scheduler(SchedulerInterface):
             # matching block. To prevent this from causing a Mamba cache miss, the
             # last chunk must be larger than `block_size`.
             block_size = self.cache_config.block_size
+            # 说明：1-based，可以理解为 block 最大整数倍的长度
             last_cache_position = (
                 request.num_prompt_tokens - request.num_prompt_tokens % block_size
             )
             # eagle prune
             if self.use_eagle:
+                # 说明：最后一个 block 被 prune 后的长度
                 last_cache_position = max(last_cache_position - block_size, 0)
             num_computed_tokens = (
                 request.num_computed_tokens
                 + num_new_local_computed_tokens
+                # 说明：上面已经 assert 了为 0
                 + num_external_computed_tokens
             )
             num_computed_tokens_after_sched = num_computed_tokens + num_new_tokens
@@ -330,9 +336,13 @@ class Scheduler(SchedulerInterface):
         # chunked prefills, prefix caching, speculative decoding,
         # and the "jump decoding" optimization in the future.
 
+        # 记录本步调度成功的 waiting requests
         scheduled_new_reqs: list[Request] = []
+        # 记录本步调度成功的 preempted requests
         scheduled_resumed_reqs: list[Request] = []
+        # 记录本步调度成功的 running requests
         scheduled_running_reqs: list[Request] = []
+        # 被抢占的 requests
         preempted_reqs: list[Request] = []
 
         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
@@ -370,17 +380,33 @@ class Scheduler(SchedulerInterface):
                 req_index += 1
                 continue
 
+            # 补充：
+            # num_token_with_spec = len(_all_token_ids) + len(spec_token_ids)
+            # _all_token_ids = prompt_token_ids + output_token_ids
+            
+            # num_computed_tokens represents the number of tokens
+            # processed in the current step, considering scheduled
+            # tokens and rejections. If some tokens are rejected,
+            # num_computed_tokens is decreased by the number of rejected
+            # tokens.
+            
+            # 说明：本步token数 = 
+            # (prompt token数 + 已输出token数 + eagle投机解码token数) + 待（异步调度）输出的token数 - KV Cache中的token数
             num_new_tokens = (
                 request.num_tokens_with_spec
                 + request.num_output_placeholders
                 - request.num_computed_tokens
             )
             if 0 < self.scheduler_config.long_prefill_token_threshold < num_new_tokens:
+                # 说明：long_prefill_token_threshold 的注释
+                # For chunked prefill, a request is considered long if the prompt is 
+                # longer than this number of tokens.
                 num_new_tokens = self.scheduler_config.long_prefill_token_threshold
             num_new_tokens = min(num_new_tokens, token_budget)
 
             # Make sure the input position does not exceed the max model len.
             # This is necessary when using spec decoding.
+            # 说明：减 1 是为新增的 token 留位置
             num_new_tokens = min(
                 num_new_tokens, self.max_model_len - 1 - request.num_computed_tokens
             )
@@ -444,15 +470,22 @@ class Scheduler(SchedulerInterface):
                     if self.policy == SchedulingPolicy.PRIORITY:
                         preempted_req = max(
                             self.running,
+                            # priority 的值越大，优先级越低
                             key=lambda r: (r.priority, r.arrival_time),
                         )
+                        # 从 running 删除后，会被 prepend 到 waiting
                         self.running.remove(preempted_req)
                         if preempted_req in scheduled_running_reqs:
+                            # 如果已经在本步骤中调度过了，则去掉
                             preempted_req_id = preempted_req.request_id
                             scheduled_running_reqs.remove(preempted_req)
+                            # 撤销 token budget
                             token_budget += num_scheduled_tokens.pop(preempted_req_id)
+                            # 删除分配 kv blocks 的记录
                             req_to_new_blocks.pop(preempted_req_id)
+                            # 删除分配投机解码 token budget 的记录
                             scheduled_spec_decode_tokens.pop(preempted_req_id, None)
+                            # 删除 encoder inputs 的记录
                             preempted_encoder_inputs = scheduled_encoder_inputs.pop(
                                 preempted_req_id, None
                             )
@@ -464,8 +497,10 @@ class Scheduler(SchedulerInterface):
                                     for i in preempted_encoder_inputs
                                 )
                                 encoder_compute_budget += num_embeds_to_restore
+                            # 因为是删除前面已经处理过的 request, 当前位置前移，索引减一
                             req_index -= 1
                     else:
+                        # fcfs，移除队尾
                         preempted_req = self.running.pop()
 
                     self._preempt_request(preempted_req, scheduled_timestamp)
@@ -474,6 +509,8 @@ class Scheduler(SchedulerInterface):
                         # No more request to preempt. Cannot schedule this request.
                         break
 
+            # 问题：为什么一定需要新的 KV blocks，旧的不能直接使用？
+            # blocks 和 Request 的绑定关系是什么样的
             if new_blocks is None:
                 # Cannot schedule this request.
                 break
@@ -521,10 +558,12 @@ class Scheduler(SchedulerInterface):
         scheduled_loras: set[int] = set()
         if self.lora_config:
             scheduled_loras = set(
+                # 每个 request 对应一个 LoRA
                 req.lora_request.lora_int_id
                 for req in scheduled_running_reqs
                 if req.lora_request and req.lora_request.lora_int_id > 0
             )
+            # 问题：为什么不会断言失败，因为会共享 LoRA ？
             assert len(scheduled_loras) <= self.lora_config.max_loras
 
         # Use a temporary RequestQueue to collect requests that need to be
@@ -598,7 +637,9 @@ class Scheduler(SchedulerInterface):
 
                 # Get already-cached tokens.
                 if request.num_computed_tokens == 0:
+                    # 补充： num_computed_tokens == 0 说明是第一次被处理的 waiting request
                     # Get locally-cached tokens.
+                    # 补充：Get the computed (cached) blocks for the request. 
                     new_computed_blocks, num_new_local_computed_tokens = (
                         self.kv_cache_manager.get_computed_blocks(request)
                     )
@@ -634,6 +675,7 @@ class Scheduler(SchedulerInterface):
                 else:
                     # KVTransfer: WAITING reqs have num_computed_tokens > 0
                     # after async KV recvs are completed.
+                    # 问题：KV 已经异步传输完毕（between scheduler steps），即应该是在两次 schedule 之间？
                     new_computed_blocks = self.kv_cache_manager.empty_kv_cache_blocks
                     num_new_local_computed_tokens = 0
                     num_computed_tokens = request.num_computed_tokens
@@ -651,6 +693,8 @@ class Scheduler(SchedulerInterface):
                     # We use `request.num_tokens` instead of
                     # `request.num_prompt_tokens` to consider the resumed
                     # requests, which have output tokens.
+                    # 补充：num_tokens = len(prompt_token_ids) + len(output_token_ids)
+                    # 问题：没有考虑 spec_token_ids 和 num_output_placeholders，是因为状态为 waiting ?
                     num_new_tokens = request.num_tokens - num_computed_tokens
                     threshold = self.scheduler_config.long_prefill_token_threshold
                     if 0 < threshold < num_new_tokens:
@@ -658,6 +702,8 @@ class Scheduler(SchedulerInterface):
 
                     # chunked prefill has to be enabled explicitly to allow
                     # pooling requests to be chunked
+                    # 补充：没有开启 chunked_prefill, 不能拆分 chunk, 只能整体调度。
+                    # 如果剩余 budget 不够，则跳过该 request
                     if (
                         not self.scheduler_config.enable_chunked_prefill
                         and num_new_tokens > token_budget
@@ -685,6 +731,7 @@ class Scheduler(SchedulerInterface):
                         )
                         if num_new_tokens == 0:
                             # The request cannot be scheduled.
+                            # 理解：这里是在严格遵循 FCFS ？
                             break
 
                 if self.need_mamba_block_aligned_split:
@@ -702,6 +749,7 @@ class Scheduler(SchedulerInterface):
                 # extra block gets allocated which
                 # creates a mismatch between the number
                 # of local and remote blocks.
+                # 补充：用 num_computed_tokens == 0 来判断是第一次被处理的 waiting request
                 effective_lookahead_tokens = (
                     0 if request.num_computed_tokens == 0 else self.num_lookahead_tokens
                 )
@@ -909,6 +957,8 @@ class Scheduler(SchedulerInterface):
         self.kv_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
         request.status = RequestStatus.PREEMPTED
+        # 说明：这里直接置 0 应该是因为该 Request 已被放回 waiting 队列，该数据不再有意义
+        # 后面在调度 waiting requests 时，会进入 num_computed_tokens == 0 分支逻辑
         request.num_computed_tokens = 0
         if request.spec_token_ids:
             request.spec_token_ids = []

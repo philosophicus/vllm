@@ -39,6 +39,7 @@ from vllm.utils.torch_utils import direct_register_custom_op
 from vllm.v1.attention.backends.mamba1_attn import Mamba1AttentionMetadata
 
 
+# 已阅
 # Adapted from transformers.models.mamba.modeling_mamba.MambaMixer
 # --8<-- [start:mamba_mixer]
 @PluggableLayer.register("mamba_mixer")
@@ -58,6 +59,7 @@ class MambaMixer(MambaBase, PluggableLayer):
     def __init__(
         self,
         hidden_size: int,
+        # 说明：论文中的 N，the SSM state dimension
         ssm_state_size: int,
         conv_kernel_size: int,
         intermediate_size: int,
@@ -96,6 +98,7 @@ class MambaMixer(MambaBase, PluggableLayer):
 
         self.in_proj = MergedColumnParallelLinear(
             hidden_size,
+            # 说明：一半用于计算 hidden_states_BC，另一半用于计算 gate
             [intermediate_size] * 2,
             bias=use_bias,
             prefix=f"{prefix}.in_proj",
@@ -104,6 +107,7 @@ class MambaMixer(MambaBase, PluggableLayer):
         # selective projection used to make dt, B and C input dependent
         self.x_proj = RowParallelLinear(
             intermediate_size,
+            # 说明：一半用于计算 \Delta，另一半用于计算 B 和 C
             time_step_rank + ssm_state_size * 2,
             bias=False,
             prefix=f"{prefix}.x_proj",
@@ -129,8 +133,11 @@ class MambaMixer(MambaBase, PluggableLayer):
             )
 
         def A_weight_loader(param: Parameter, loaded_weight: torch.Tensor):
+            # 理解：A 取负是因为 discretization 规则 \bar{A} = exp(\Delta A)，\bar{A} 是 h_{t-1} 的系数，
+            # 负数系数可以让 \bar{A} 的绝对值小于 1，从而保证离散时间系统的稳定性
             weight_loader(param, -torch.exp(loaded_weight.float()))
 
+        # 说明：A、D 与输入 X 无关，是需要加载的权重
         tp_size = get_tensor_model_parallel_world_size()
         self.A = nn.Parameter(
             torch.empty(
@@ -230,6 +237,7 @@ class MambaMixer(MambaBase, PluggableLayer):
             self.prefix,
         )
 
+    # 已阅
     def forward_impl(self, hidden_states: torch.Tensor, output: torch.Tensor):
         """
         Run the Mamba-1 SSM pipeline.
@@ -257,6 +265,7 @@ class MambaMixer(MambaBase, PluggableLayer):
         attn_metadata = forward_context.attn_metadata
 
         assert self.cache_config is not None
+        # 说明：value must be a multiple of 8 to align with causal_conv1d kernel (8)
         mamba_block_size = self.cache_config.mamba_block_size
         is_mamba_cache_all = self.cache_config.mamba_cache_mode == "all"
 
@@ -267,14 +276,21 @@ class MambaMixer(MambaBase, PluggableLayer):
             query_start_loc_p = attn_metadata.query_start_loc_p
             state_indices_tensor = attn_metadata.state_indices_tensor
             self_kv_cache = self.kv_cache[forward_context.virtual_engine]
+            # 说明：转置前的 shape 是 [..., conv_kernel_size - 1, intermediate_size]，
+            # 转置后的 shape 是 [..., intermidiate_size, conv_kernel_size - 1]，
+            # conv_kernel_size - 1 是 token 维度，intermediate_size 是特征维度
             conv_state = self_kv_cache[0].transpose(-1, -2)
             ssm_state = self_kv_cache[1]
             has_initial_states_p = attn_metadata.has_initial_states_p
 
+        # 说明：hidden_states 的 shape 是 [L, D]，其中 L 包含了 prefill tokens 和 decode tokens
+        # 说明：in_proj 的输出 shape 是 [L, 2 * intermediate_size]，转置后变成 [2 * intermediate_size, L]
         # 1. Gated MLP's linear projection
         projected_states = self.in_proj(hidden_states)[0].transpose(-2, -1)
+        # 说明：shape 均为 [intermediate_size, L]
         hidden_states_BC, gate = projected_states.chunk(2, dim=-2)
 
+        # 说明：shape 为 [intermediate_size, conv_kernel_size]，即 [output_channels, input_channels]
         conv_weights = self.conv1d.weight.view(
             self.conv1d.weight.size(0), self.conv1d.weight.size(2)
         )
@@ -293,6 +309,7 @@ class MambaMixer(MambaBase, PluggableLayer):
         num_actual_tokens = num_prefill_tokens + num_decode_tokens
 
         prefill_decode_split = split_batch_to_prefill_and_decode(
+            # 说明：shape 为 [intermediate_size, L]，其中 L 包含了 prefill tokens 和 decode tokens
             hidden_states_BC,
             gate,
             state_indices_tensor,
@@ -308,6 +325,7 @@ class MambaMixer(MambaBase, PluggableLayer):
         state_indices_tensor_d = prefill_decode_split.state_indices_tensor_d
 
         if is_mamba_cache_all:
+            # 说明：触发 kernel 中 APC_ENABLED 相关逻辑
             block_idx_last_computed_token_d, block_idx_last_computed_token_p = (
                 torch.split(
                     attn_metadata.block_idx_last_computed_token,
@@ -338,9 +356,12 @@ class MambaMixer(MambaBase, PluggableLayer):
         ssm_outputs = []
 
         if has_prefill:
+            # 说明：shape 为 [intermediate_size, L_p]，其中 L_p 是 prefill tokens 的数量
             # 2. Convolution sequence transformation
             conv_out_p = causal_conv1d_fn(
+                # 说明：shape 为 [intermediate_size, L_p]，L_p 是 prefill tokens 的数量
                 hidden_states_BC_p,
+                # 说明：shape 为 [intermediate_size, conv_kernel_size]
                 conv_weights,
                 self.conv1d.bias,
                 activation=self.activation,
@@ -350,22 +371,30 @@ class MambaMixer(MambaBase, PluggableLayer):
                 query_start_loc=query_start_loc_p,
                 block_idx_first_scheduled_token=block_idx_first_scheduled_token_p,
                 block_idx_last_scheduled_token=block_idx_last_scheduled_token_p,
+                # 说明：对应的 conv_state 可能在 conv_kernel_size - 1 > seqlen 时被更新；
+                # 问题：这个时候的 seqlen 也太小了 ? last_computed_token 
                 initial_state_idx=block_idx_last_computed_token_p,
                 num_computed_tokens=num_computed_tokens_p,
                 block_size_to_align=mamba_block_size,
             )
+            # 说明：discrete_time_step_p 的 shape 是 [intermediate_size, L_p]，内部做了 transpose；
+            # B_p 和 C_p 的 shape 是 [L_p, ssm_state_size]
             # 3. State Space Model sequence transformations.
             discrete_time_step_p, B_p, C_p = self._ssm_transform(
+                # 说明：shape 为 [L_p, intermediate_size]，其中 L_p 是 prefill tokens 的数量
                 conv_out_p.transpose(-2, -1)
             )
             time_proj_bias = self._time_proj_bias()
 
+            # 说明：结果的 shape 为 [intermediate_size, L_p]
             # 4. Perform the recurrence y ← SSM(A, B, C, Δ)(x)
             scan_out_p = selective_scan_fn(
                 conv_out_p,
                 ssm_state,
                 discrete_time_step_p,
                 self.A,
+                # 说明：B_p 和 C_p 的 shape 是 [..., L_p, ssm_state_size]，转置后变成 [..., ssm_state_size, L_p]
+                # 实际 shape 为 (ngroups, dstate, total_length) for varlen or (batch, ngroups, dstate, seqlen)
                 B_p.transpose(-2, -1),
                 C_p.transpose(-2, -1),
                 self.D.float(),
@@ -393,8 +422,11 @@ class MambaMixer(MambaBase, PluggableLayer):
             else:
                 state_indices_tensor_d_input = state_indices_tensor_d
                 state_indices_tensor_d_output = state_indices_tensor_d
+            # 理解：没有传 query_start_loc，说明 decode 阶段每次只处理一个 token，不存在 variable length sequences 的问题
+            # 说明：返回值和输入 x 的 shape 一致，转置后 shape 等于 hidden_states_BC_d 的 shape，即 [intermediate_size, L_d]
             # 2. Convolution sequence transformation
             conv_out_d = causal_conv1d_update(
+                # 说明：转置后 shape 为 [L_d, intermediate_size]，L_d 是 decode tokens 的数量
                 hidden_states_BC_d.transpose(0, 1),
                 conv_state,
                 conv_weights,
@@ -405,13 +437,17 @@ class MambaMixer(MambaBase, PluggableLayer):
                 initial_state_idx=block_idx_last_computed_token_d,
             ).transpose(0, 1)
 
+            # 说明：discrete_time_step_p 的 shape 是 [intermediate_size, L_p]，内部做了 transpose；
+            # B_p 和 C_p 的 shape 是 [L_p, ssm_state_size]
             # 3. State Space Model sequence transformation.
             discrete_time_step_d, B_d, C_d = self._ssm_transform(
                 conv_out_d.transpose(-2, -1)
             )
+            # 说明：time_proj_bias 的 shape 是 [intermediate_size]
             time_proj_bias = self._time_proj_bias()
 
             # 4. Perform the recurrence y ← SSM(A, B, C, Δ)(x)
+            # 说明：scan_outputs_d 的 shape 为 [L_d, intermediate_size]
             scan_outputs_d = torch.empty_like(hidden_states_BC_d.transpose(0, 1))
             selective_state_update(
                 ssm_state,
@@ -428,10 +464,13 @@ class MambaMixer(MambaBase, PluggableLayer):
                 dst_state_batch_indices=state_indices_tensor_d_output,
                 out=scan_outputs_d,
             )
+            # 说明：转置后的 shape 是 [intermediate_size, L_d]，其中 L_d 是 decode tokens 的数量
             scan_outputs_d = scan_outputs_d.transpose(0, 1)
 
+            # 说明：decode 的结果在前，prefill 的结果在后
             ssm_outputs.insert(0, scan_outputs_d)
 
+        # 说明：结果 shape 是 [intermediate_size, L]，其中 L 包含了 decode tokens 和 prefill tokens
         scan_outputs_combined = (
             ssm_outputs[0] if len(ssm_outputs) == 1 else torch.cat(ssm_outputs, dim=-1)
         )
@@ -443,8 +482,10 @@ class MambaMixer(MambaBase, PluggableLayer):
         else:
             out = self.out_proj(scan_outputs_combined.transpose(-2, -1))[0]
 
+        # 说明：L 的 shape 为 (L, hidden_size)，与输入 hidden_states 的 shape 一致
         output[:num_actual_tokens] = out
 
+    # 已阅
     def get_state_dtype(self) -> tuple[torch.dtype]:
         assert self.model_config is not None
         assert self.cache_config is not None
@@ -454,6 +495,7 @@ class MambaMixer(MambaBase, PluggableLayer):
             self.cache_config.mamba_ssm_cache_dtype,
         )
 
+    # 已阅
     def get_state_shape(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
         return MambaStateShapeCalculator.mamba1_state_shape(
             tp_world_size=get_tensor_model_parallel_world_size(),
@@ -481,7 +523,9 @@ class PrefillDecodeSplit(NamedTuple):
     state_indices_tensor_d: torch.Tensor
 
 
+# 已阅
 def split_batch_to_prefill_and_decode(
+    # 说明：shape 为 [intermediate_size, L]，其中 L 包含了 prefill tokens 和 decode tokens
     hidden_states_BC: torch.Tensor,
     gate: torch.Tensor,
     state_indices_tensor: torch.Tensor,
@@ -493,6 +537,7 @@ def split_batch_to_prefill_and_decode(
 
     # In v1, decode tokens come first, then prefill tokens.
     hidden_states_BC_d, hidden_states_BC_p = torch.split(
+        # 说明：能这样切分说明没有 B 维度，所有 token 通过 variable length sequences 的形式拼接到一起
         hidden_states_BC[..., :num_actual_tokens],
         [num_decode_tokens, num_prefill_tokens],
         dim=-1,
@@ -518,6 +563,7 @@ def split_batch_to_prefill_and_decode(
     )
 
 
+# 已阅
 def mamba_mixer(
     hidden_states: torch.Tensor,
     output: torch.Tensor,

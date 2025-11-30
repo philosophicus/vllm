@@ -43,6 +43,7 @@ struct Utils {
   #define VLLM_LDG(arg) *(arg)
 #endif
 
+// 说明：-1 表示所有线程参与
 #ifndef USE_ROCM
   #define VLLM_SHFL_XOR_SYNC(var, lane_mask) \
     __shfl_xor_sync(uint32_t(-1), var, lane_mask)

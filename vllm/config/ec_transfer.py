@@ -12,6 +12,10 @@ ECConsumer = Literal["ec_consumer", "ec_both"]
 ECRole = Literal[ECProducer, ECConsumer]
 
 
+# 说明：EC = Encoder Cache;
+# 官方文档 Disaggregated Encoder: A disaggregated encoder runs the
+# vision-encoder stage of a multimodal LLM in a process that is
+# separate from the pre-fill / decoder stage.
 @config
 class ECTransferConfig:
     """Configuration for distributed EC cache transfer."""

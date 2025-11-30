@@ -13,6 +13,8 @@ from vllm.triton_utils import tl, triton
 TRITON_22 = version.parse(triton.__version__) >= version.parse("2.2.0")
 
 
+# 已阅
+# 说明：包含 Left Factors，Diagonal Blocks，残差，Gate 等计算逻辑的 Kernel
 @triton.autotune(
     configs=[
         triton.Config(
@@ -76,16 +78,26 @@ TRITON_22 = version.parse(triton.__version__) >= version.parse("2.2.0")
 @triton.jit
 def _chunk_scan_fwd_kernel(
     # Pointers to matrices
+    # 说明：cb 的 shape 为 (nchunks, ngroups, chunk_size, chunk_size)
     cb_ptr,
+    # 说明：x 的 shape 为 (seqlen, nheads, headdim)
     x_ptr,
+    # 说明：z 的 shape 为 (seqlen, nheads, headdim)
     z_ptr,
+    # 说明：out 的 shape 是 (seqlen, nheads, headdim)，和输入 x 的 shape 一样
     out_ptr,
+    # 说明：dt 的 shape 为 (nheads, nchunks, chunk_size)
     dt_ptr,
+    # 说明：dA_cumsum 的 shape 为 (nheads, nchunks, chunk_size)
     dA_cumsum_ptr,
     seq_idx_ptr,
+    # 说明：C 的 shape 为 (seqlen, ngroups, dstate)
     C_ptr,
+    # 说明：states 的 shape 为 (nchunks, nheads, headdim, dstate)
     states_ptr,
+    # 说明：D 的 shape 为 (nheads, headdim) 或 (nheads,)，用于残差连接
     D_ptr,
+    # 说明：initial states 的 shape 为 (batch, nheads, headdim, dstate)
     initstates_ptr,
     cu_chunk_seqlens_ptr,
     # Matrix dimensions
@@ -139,10 +151,15 @@ def _chunk_scan_fwd_kernel(
     IS_TRITON_22: tl.constexpr,
     HAS_INITSTATES: tl.constexpr,
 ):
+    # 说明：每个 block 处理一个 chunk 和一个 head 的 BLOCK_SIZE_M 个 token 和 BLOCK_SIZE_N 个 headdim
+    # 说明：chunk 维度的索引
     pid_c = tl.program_id(axis=1).to(tl.int64)
+    # 说明：head 维度的索引
     pid_h = tl.program_id(axis=2)
     num_pid_n = tl.cdiv(hdim, BLOCK_SIZE_N)
+    # 说明：seqlen 维度的索引，对应 BLOCK_SIZE_M 个 token
     pid_m = tl.program_id(axis=0) // num_pid_n
+    # 说明：维度索引，对应 BLOCK_SIZE_N 个 headdim
     pid_n = tl.program_id(axis=0) % num_pid_n
     cb_ptr += pid_c * stride_cb_chunk + (pid_h // nheads_ngroups_ratio) * stride_cb_head
     chunk_seqlen_start = tl.load(cu_chunk_seqlens_ptr + pid_c)
@@ -174,6 +191,7 @@ def _chunk_scan_fwd_kernel(
         prev_states_hdim = stride_init_states_hdim
         prev_states_dstate = stride_init_states_dstate
     else:
+        # 说明：pid_c - 1 表示前一个 chunk
         prev_states_ptr = (
             states_ptr + (pid_c - 1) * stride_states_chunk + pid_h * stride_states_head
         )
@@ -221,6 +239,7 @@ def _chunk_scan_fwd_kernel(
                 + offs_n[None, :] * prev_states_hdim
                 + offs_k_dstate[:, None] * prev_states_dstate
             )
+            # 说明：从 Center Factors 的计算结果中获取 prev states
             prev_states = tl.load(
                 prev_states_ptrs,
                 mask=(offs_k_dstate[:, None] < dstate) & (offs_n[None, :] < hdim),
@@ -228,6 +247,7 @@ def _chunk_scan_fwd_kernel(
             )
             prev_states = prev_states.to(C_ptr.dtype.element_ty)
 
+        # 说明：计算 Left Factors
         acc = tl.dot(C, prev_states) * scale_m[:, None]
 
     else:
@@ -236,6 +256,7 @@ def _chunk_scan_fwd_kernel(
             + offs_n[None, :] * prev_states_hdim
             + offs_k_dstate[:, None] * prev_states_dstate
         )
+        # 说明：BLOCK_SIZE_DSTATE > 128 时，对 dstate 做遍历，每次 BLOCK_SIZE_K 个线程并行处理
         for k in range(0, dstate, BLOCK_SIZE_K):
             C = tl.load(
                 C_ptrs,
@@ -258,6 +279,7 @@ def _chunk_scan_fwd_kernel(
             acc += tl.dot(C, prev_states)
             C_ptrs += BLOCK_SIZE_K
             prev_states_ptrs += BLOCK_SIZE_K
+        # 说明：计算 Left Factors
         acc *= scale_m[:, None]
 
     offs_k = tl.arange(0, BLOCK_SIZE_K)
@@ -274,6 +296,9 @@ def _chunk_scan_fwd_kernel(
         if not IS_CAUSAL
         else min((pid_m + 1) * BLOCK_SIZE_M, chunk_size_limit)
     )
+    # 说明：这里处理的是 Diagonal Blocks 逻辑，CB 要和 A 和 x 相乘得到 Diagonal Blocks 的状态结果
+    # 对 CB 的第二个 chunk_size 维度（dim = -1）按照 BLOCK_SIZE_K 分块做遍历，因为 CB 要和 x 相乘，
+    # 所以该维度相当于矩阵乘法中的 K 维
     for k in range(0, K_MAX, BLOCK_SIZE_K):
         cb = tl.load(
             cb_ptrs,
@@ -283,10 +308,12 @@ def _chunk_scan_fwd_kernel(
         dA_cs_k = tl.load(dA_cumsum_ptrs, mask=offs_k < chunk_size - k, other=0.0).to(
             tl.float32
         )
+        # 理解：下面是在计算 CB 时，范围超出 chunk_size_limit 的部分，值为 0，所以乘积为 0，对乘积规约的结果也为 0
         # If there's seq_idx, we already set cb[i, j] = 0 for seq_idx[i] != seq_idx[j].
         # So we don't need masking wrt seq_idx here.
         cb *= tl.exp(dA_cs_m[:, None] - dA_cs_k[None, :])
         dt_k = tl.load(dt_ptrs, mask=offs_k < chunk_size - k, other=0.0).to(tl.float32)
+        # 说明：乘上的 dt_k 是对 B 做 euler's discretization (一阶近似，delta * B) 中的 delta
         cb *= dt_k
         if IS_CAUSAL:
             mask = offs_m[:, None] >= k + offs_k[None, :]
@@ -345,6 +372,8 @@ def _chunk_scan_fwd_kernel(
     )
 
 
+# 已阅
+# 说明：包含 Left Factors，Diagonal Blocks，残差，Gate 等计算逻辑
 def _chunk_scan_fwd(
     cb,
     x,

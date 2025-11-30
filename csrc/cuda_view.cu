@@ -2,6 +2,7 @@
 #include <torch/cuda.h>
 #include <cuda_runtime.h>
 
+// 已阅
 // This function assumes that `cpu_tensor` is a CPU tensor allocated with pinned
 // memory, and that UVA (Unified Virtual Addressing) is enabled.
 torch::Tensor get_cuda_view_from_cpu_tensor(torch::Tensor& cpu_tensor) {
@@ -10,6 +11,7 @@ torch::Tensor get_cuda_view_from_cpu_tensor(torch::Tensor& cpu_tensor) {
   // Get raw host pointer from CPU tensor
   void* host_ptr = cpu_tensor.data_ptr();
 
+  // 说明：指向位于主机，但 GPU 能直接访问的 pinned memory
   // Get a device pointer corresponding to the pinned host memory
   void* device_ptr = nullptr;
   cudaError_t err = cudaHostGetDevicePointer(&device_ptr, host_ptr, 0);

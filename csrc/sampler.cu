@@ -12,6 +12,8 @@
 
 namespace vllm {
 
+// 已阅
+// 说明：一个 block 处理一个 sequence 的一段长度为 tile_size 的 vocab
 template <typename scalar_t>
 __global__ void apply_repetition_penalties_kernel(
     scalar_t* __restrict__ logits,         // [num_seqs, vocab_size]
@@ -77,6 +79,7 @@ static inline __device__ bool isPartialMatch(float x, uint32_t pattern) {
     return true;
   }
   uint32_t bits = __float_as_uint(x);
+  // 说明：负数保持不变；非负数取反，首位变为 0
   bits = (bits & 0x80000000) ? bits : ~bits & 0x7fffffff;
   return (bits ^ pattern) >> shift == 0;
 }
@@ -153,6 +156,7 @@ __device__ void vectorized_process(size_t thread_rank, size_t num_threads,
   }
 }
 
+// 待看
 template <int step, int kNumThreadsPerBlock, int kNumBins, int kNumFinalItems,
           bool multipleBlocksPerRow, bool mergeBlocks, typename SmemFinalType,
           typename SmemOutputType>
@@ -171,7 +175,9 @@ __device__ bool processHistogramStep(
   __syncthreads();
 
   // Update pattern
+  // 说明：0 -> 0, 1 -> 0, 2 -> 21, 3 -> 10
   constexpr auto patternShift = step < 2 ? 0 : step == 2 ? 21 : 10;
+  // 说明：logitPattern 在 step = 0 或 1 时为 0
   if constexpr (step == 2) {
     logitPattern = static_cast<uint32_t>(thresholdBinIdx & 0x7ff)
                    << patternShift;
@@ -328,6 +334,7 @@ template <int kNumThreadsPerBlock, int kNumBins, bool useRadixSort,
 static __device__ void topKPerRowJob(const int* indices, const float* logits,
                                      int rowStart, int rowEnd, int* outIndices,
                                      float* outLogits, int stride1, int topK) {
+  // 说明：11 位共有 2048 个桶
   // The number of slots for the final pass.
   static constexpr int kNumFinalItems = 2048;
   // The number of elements per thread for the final sort.
@@ -385,12 +392,14 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
     for (int rowIt = threadIdx.x; rowIt < rowLen;
          rowIt += kNumThreadsPerBlock) {
       if constexpr (multipleBlocksPerRow) {
+        // 说明：一行被多个 block 处理，rowIt + rowStart 表示全局索引
         outIndices[rowIt] = rowIt + rowStart;
         outLogits[rowIt] = logits[rowIt + rowStart];
       } else {
         outIndices[rowIt] = rowIt;
       }
     }
+    // 说明：给不足 topK 的位置填充默认值
     for (int rowIt = rowLen + threadIdx.x; rowIt < topK;
          rowIt += kNumThreadsPerBlock) {
       outIndices[rowIt] = -1;
@@ -537,6 +546,7 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
   }
 }
 
+// 已阅
 template <int kNumThreadsPerBlock, bool useRadixSort>
 static __global__ __launch_bounds__(kNumThreadsPerBlock) void topKPerRowPrefill(
     const float* logits, const int* rowStarts, const int* rowEnds,
@@ -602,6 +612,7 @@ static __global__ __launch_bounds__(kNumThreadsPerBlock) void topKPerRowDecode(
 
 }  // namespace vllm
 
+// 已阅
 void apply_repetition_penalties_(
     torch::Tensor& logits,             // [num_seqs, vocab_size], in-place
     const torch::Tensor& prompt_mask,  // [num_seqs, vocab_size]
@@ -622,6 +633,7 @@ void apply_repetition_penalties_(
   cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount,
                          logits.get_device());
 
+  // 说明：ceil(sms / num_seqs) 表示每个序列分配的 SM 数量
   // Compute tile_num and tile_size
   int tile_num =
       std::min(vocab_size, std::max(1, (sms + num_seqs - 1) / num_seqs));
@@ -629,6 +641,7 @@ void apply_repetition_penalties_(
 
   // Each block handles one sequence and a tile of vocab
   dim3 grid(num_seqs, tile_num);
+  // 说明：block 大小最多 1024 个线程
   dim3 block(std::min(tile_size, 1024));
   const at::cuda::OptionalCUDAGuard device_guard(device_of(logits));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
@@ -698,17 +711,22 @@ void top_k_per_row_decode(const torch::Tensor& logits, int64_t next_n,
   }
 }
 
+// 已阅
+// 说明：每行 topK 个最大值的索引
 void top_k_per_row_prefill(const torch::Tensor& logits,
                            const torch::Tensor& rowStarts,
                            const torch::Tensor& rowEnds, torch::Tensor& indices,
                            int64_t numRows, int64_t stride0, int64_t stride1,
                            int64_t topK) {
+  // 理解：12288 对硬件友好，可以拆成 64 * 192, 128 * 96, 256 * 48, 512 * 24 等等
   constexpr int kSortingAlgorithmThreshold = 12288;
   constexpr int kNumThreadsPerBlock = 512;
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   int numInsertionBlocks =
       std::min(static_cast<int>(numRows), kSortingAlgorithmThreshold);
+  // 说明：一个 block 处理一个序列；一个 block 使用 512 个线程；
+  // false 表示使用插入排序
   vllm::topKPerRowPrefill<kNumThreadsPerBlock, false>
       <<<numInsertionBlocks, kNumThreadsPerBlock, topK * sizeof(int32_t),
          stream>>>(logits.data_ptr<float>(), rowStarts.data_ptr<int>(),
@@ -718,6 +736,7 @@ void top_k_per_row_prefill(const torch::Tensor& logits,
 
   if (numRows > kSortingAlgorithmThreshold) {
     int numRadixBlocks = numRows - kSortingAlgorithmThreshold;
+    // 说明：true 表示使用基数排序
     vllm::topKPerRowPrefill<kNumThreadsPerBlock, true>
         <<<numRadixBlocks, kNumThreadsPerBlock, topK * sizeof(int32_t),
            stream>>>(logits.data_ptr<float>(), rowStarts.data_ptr<int>(),

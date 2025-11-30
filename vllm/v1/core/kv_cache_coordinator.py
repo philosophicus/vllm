@@ -30,6 +30,7 @@ class KVCacheCoordinator(ABC):
     Coordinate the KV cache of different KV cache groups.
     """
 
+    # 已阅
     def __init__(
         self,
         kv_cache_config: KVCacheConfig,
@@ -56,6 +57,7 @@ class KVCacheCoordinator(ABC):
 
         # Needs special handling for find_longest_cache_hit if eagle is enabled
         self.use_eagle = use_eagle
+        # 补充：每一个 kv_cache_group 对应一个 SingleTypeKVCacheManager
         self.single_type_managers = tuple(
             get_manager_for_kv_cache_spec(
                 kv_cache_spec=kv_cache_group.kv_cache_spec,
@@ -68,13 +70,18 @@ class KVCacheCoordinator(ABC):
             for i, kv_cache_group in enumerate(self.kv_cache_config.kv_cache_groups)
         )
 
+    # 已阅
+    # 说明：所有 kv cache group 的待分配 block 数量之和
     def get_num_blocks_to_allocate(
         self,
         request_id: str,
         num_tokens: int,
+        # 说明：对应 num_new_computed_tokens 数量的 block 列表
         new_computed_blocks: tuple[Sequence[KVCacheBlock], ...],
         num_encoder_tokens: int,
+        # 说明：total_computed_tokens = num_computed_tokens + num_new_computed_tokens + num_external_computed_tokens
         total_computed_tokens: int,
+        # 说明：num_tokens = num_tokens_main_model + num_lookahead_tokens
         num_tokens_main_model: int,
     ) -> int:
         """
@@ -114,10 +121,14 @@ class KVCacheCoordinator(ABC):
                 )
         return num_blocks_to_allocate
 
+    # 已阅
+    # 说明：仅针对新 request 的 local computed tokens 和 external computed tokens 分配 blocks，
+    # 对于被跳过的 blocks 使用 null block 占位
     def allocate_new_computed_blocks(
         self,
         request_id: str,
         new_computed_blocks: tuple[Sequence[KVCacheBlock], ...],
+        # 说明：num_computed_tokens + len(new_computed_blocks) * block_size
         num_local_computed_tokens: int,
         num_external_computed_tokens: int,
     ) -> None:
@@ -140,6 +151,7 @@ class KVCacheCoordinator(ABC):
                 num_external_computed_tokens,
             )
 
+    # 已阅
     def allocate_new_blocks(
         self,
         request_id: str,
@@ -175,6 +187,7 @@ class KVCacheCoordinator(ABC):
             for manager in self.single_type_managers
         )
 
+    # 已阅
     def cache_blocks(self, request: Request, num_computed_tokens: int) -> None:
         """
         Cache the blocks for the request.
@@ -215,6 +228,7 @@ class KVCacheCoordinator(ABC):
             for manager in self.single_type_managers
         ]
 
+    # 已阅
     def remove_skipped_blocks(
         self, request_id: str, total_computed_tokens: int
     ) -> None:
@@ -346,6 +360,7 @@ class UnitaryKVCacheCoordinator(KVCacheCoordinator):
             "UnitaryKVCacheCoordinator assumes only one kv cache group"
         )
 
+    # 已阅
     def find_longest_cache_hit(
         self,
         block_hashes: list[BlockHash],
@@ -365,6 +380,7 @@ class UnitaryKVCacheCoordinator(KVCacheCoordinator):
         return hit_blocks, len(hit_blocks[0]) * self.block_size
 
 
+# 已阅
 class HybridKVCacheCoordinator(KVCacheCoordinator):
     """
     KV cache coordinator for hybrid models with multiple KV cache types, and

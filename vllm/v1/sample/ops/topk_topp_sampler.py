@@ -15,6 +15,7 @@ from vllm.platforms import CpuArchEnum, current_platform
 logger = init_logger(__name__)
 
 
+# 说明：top-k 和 top-p 随机采样模块
 class TopKTopPSampler(nn.Module):
     """
     Module that performs optional top-k and top-p filtering followed by
@@ -23,6 +24,7 @@ class TopKTopPSampler(nn.Module):
     Implementations may update the logits tensor in-place.
     """
 
+    # 已阅
     def __init__(self, logprobs_mode: LogprobsMode = "raw_logprobs") -> None:
         super().__init__()
         self.logprobs_mode = logprobs_mode
@@ -89,6 +91,7 @@ class TopKTopPSampler(nn.Module):
 
         self.apply_top_k_top_p = apply_top_k_top_p
 
+    # 已阅
     def forward_native(
         self,
         logits: torch.Tensor,
@@ -107,6 +110,7 @@ class TopKTopPSampler(nn.Module):
             logits_to_return = logits
         elif self.logprobs_mode == "processed_logprobs":
             logits_to_return = logits.log_softmax(dim=-1, dtype=torch.float32)
+        # 说明：返回的是 log_softmax，采样时需要用到 softmax
         probs = logits.softmax(dim=-1, dtype=torch.float32)
         return random_sample(probs, generators), logits_to_return
 
@@ -240,9 +244,14 @@ def compiled_random_sample(logits: torch.Tensor) -> torch.Tensor:
     return probs.div(q).argmax(dim=-1).view(-1)
 
 
+# 已阅
+# 说明：对 logits 应用 top-k 和 top-p 过滤，将不满足条件的 token logits 设置为 -inf；
+# 先对 logits 进行升序排序，再根据 top-k 和 top-p 条件进行过滤，最后恢复原顺序
 def apply_top_k_top_p(
     logits: torch.Tensor,
+    # 说明：SamplingMetadata 中的 top_k，shape 为 (num_reqs, )
     k: torch.Tensor | None,
+    # 说明：SamplingMetadata 中的 top_p，shape 为 (num_reqs, )
     p: torch.Tensor | None,
 ) -> torch.Tensor:
     """Apply top-k and top-p masks to the logits.
@@ -256,9 +265,11 @@ def apply_top_k_top_p(
         if k is None:
             return logits
 
+        # 说明：不需要 sorting 整个 vocab，只需要对 top-k 进行排序
         # Avoid sorting vocab for top-k only case.
         return apply_top_k_only(logits, k)
 
+    # 说明：升序排列
     logits_sort, logits_idx = logits.sort(dim=-1, descending=False)
 
     if k is not None:
@@ -278,13 +289,17 @@ def apply_top_k_top_p(
         top_p_mask[:, -1] = False
         logits_sort.masked_fill_(top_p_mask, -float("inf"))
 
+    # 说明：dim=-1, logits[i][index[i][j]] = logits_sort[i][j]，恢复原顺序
     # Re-sort the probabilities.
     logits = logits_sort.scatter(dim=-1, index=logits_idx, src=logits_sort)
     return logits
 
 
+# 已阅
+# 说明：对于非 top-k 行保留所有 logits，对于 top-k 行只保留 top-k logits，将其他 logits masked_fill_ 为 -inf 
 def apply_top_k_only(
     logits: torch.Tensor,
+    # 说明：shape 为 (num_reqs, )
     k: torch.Tensor,
 ) -> torch.Tensor:
     """
@@ -294,20 +309,30 @@ def apply_top_k_only(
 
     The logits tensor may be updated in-place.
     """
+    # 说明：对于非 top-k 行，将 k 设置为 vocab size，从而不会过滤任何 token
     no_top_k_mask = k == logits.shape[1]
     # Set non-top-k rows to 1 so that we can gather.
     k = k.masked_fill(no_top_k_mask, 1)
     max_top_k = k.max()
     # topk.values tensor has shape [batch_size, max_top_k].
     # Convert top k to 0-based index in range [0, max_top_k).
+    # 说明：shape 为 (num_reqs, 1)
     k_index = k.sub_(1).unsqueeze(1)
+    # 说明：dim = 1, top_k_mask[i][j] = topk.values[i][k_index[i][j]]；
+    # 说明：得到阈值 tensor，shape 为 (num_reqs, 1)
     top_k_mask = logits.topk(max_top_k, dim=1).values.gather(1, k_index.long())
+    # 说明：对于非 top-k 行，将 top_k_mask 设置为 -inf，从而不会过滤任何 token
     # Handle non-topk rows.
     top_k_mask.masked_fill_(no_top_k_mask.unsqueeze(1), -float("inf"))
     logits.masked_fill_(logits < top_k_mask, -float("inf"))
     return logits
 
 
+# 已阅
+# 说明：先整体产生没有 seed 的指数分布采样，再根据 generator 逐一生成有 seed 的指数分布覆盖旧值
+# 调研：没有使用 multinomial，原因是会导致 CPU-GPU 同步；另一个写法是使用 gumbel_noise，调研一下没有使用的原因；
+# categorical 分布又是什么意思
+# 技巧
 def random_sample(
     probs: torch.Tensor,
     generators: dict[int, torch.Generator],
@@ -323,6 +348,7 @@ def random_sample(
     # not have its own seed. Then, we overwrite the values for the requests
     # that have their own seeds.
     if len(generators) != probs.shape[0]:
+        # 说明：指数分布 lamba = 1，对每个位置使用相同的分布采样
         q.exponential_()
     if generators:
         # TODO(woosuk): This can be slow because we handle each request

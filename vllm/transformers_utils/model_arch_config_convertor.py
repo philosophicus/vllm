@@ -257,6 +257,9 @@ class ModelArchConfigConvertorBase:
             )
         return False
 
+    # 已阅
+    # 说明：从 HuggingFace config 中推导出 max_model_len 以及对应的 key，
+    # 不同模型可能使用不同的 key 来表示 max_model_len；
     def derive_max_model_len_and_key(self) -> tuple[float, str | None]:
         derived_max_model_len = float("inf")
         possible_keys = [

@@ -19,6 +19,8 @@ else:
     KVConnectorKVEvents = object
 
 
+# 已阅
+# 说明：类型均为 numpy.ndarray
 class LogprobsLists(NamedTuple):
     # [num_reqs x num_generated_tokens, max_num_logprobs + 1]
     logprob_token_ids: np.ndarray
@@ -32,6 +34,7 @@ class LogprobsLists(NamedTuple):
     # different for each request.
     cu_num_generated_tokens: list[int] | None = None
 
+    # 说明：根据给定的 req_idx 和 num_positions，切片出对应请求的 logprobs 列表
     def slice_request(self, req_idx: int, num_positions: int):
         if self.cu_num_generated_tokens is not None:
             req_idx = self.cu_num_generated_tokens[req_idx]
@@ -44,16 +47,24 @@ class LogprobsLists(NamedTuple):
         )
 
 
+# 已阅
 class LogprobsTensors(NamedTuple):
+    # 说明：每个 token 对应的 most likely tokens 的 id 列表
+    # 对于 max_num_logprobs >= 0 的情况，最前面是采样 token 自己的 id
     # [num_reqs x num_generated_tokens, max_num_logprobs + 1]
     logprob_token_ids: torch.Tensor
+    # 说明：每个 token 对应的 most likely tokens 的 logprob 列表，
+    # 对于 max_num_logprobs >= 0 的情况，最前面是采样 token 自己的 logprob
     # [num_reqs x num_generated_tokens, max_num_logprobs + 1]
     logprobs: torch.Tensor
+    # 说明：每个 token 的 rank，即值大于等于该 token logprob 的 token 数量
+    # 统计方法见 batched_count_greater_than
     # [num_reqs x num_generated_tokens]
     selected_token_ranks: torch.Tensor
     # [num_reqs]
     cu_num_generated_tokens: list[int] | None = None
 
+    # 说明：将 LogprobsTensors 转换为 LogprobsLists，类型从 torch.Tensor 变为 numpy.ndarray
     def tolists(self, cu_num_generated_tokens: list[int] | None = None):
         return LogprobsLists(
             self.logprob_token_ids.cpu().numpy(),
@@ -64,6 +75,7 @@ class LogprobsTensors(NamedTuple):
             else self.cu_num_generated_tokens,
         )
 
+    # 说明：将 LogprobsTensors 转移到 CPU 上，non_blocking=True
     def to_cpu_nonblocking(self) -> "LogprobsTensors":
         if self.logprob_token_ids.device.type == "cpu":
             return self
@@ -85,6 +97,7 @@ class LogprobsTensors(NamedTuple):
             self.selected_token_ranks[mask],
         )
 
+    # 说明：根据给定形状创建空的 CPU 上的 LogprobsTensors
     @staticmethod
     def empty_cpu(
         num_positions: int, num_tokens_per_position: int
@@ -110,6 +123,7 @@ class LogprobsTensors(NamedTuple):
 PoolerOutput: TypeAlias = torch.Tensor | list[torch.Tensor] | list[torch.Tensor | None]
 
 
+# 已阅
 @dataclass
 class SamplerOutput:
     # [num_reqs, max_num_generated_tokens]
@@ -209,6 +223,7 @@ class AsyncModelRunnerOutput(ABC):
         pass
 
 
+# 已阅
 @dataclass
 class DraftTokenIds:
     # [num_reqs]

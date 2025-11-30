@@ -102,6 +102,7 @@ class ModalityDataItems(ABC, Generic[_T, _I]):
         raise NotImplementedError
 
 
+# 说明：子类
 class ProcessorBatchItems(ModalityDataItems[Sequence[_T], _T]):
     """Base class for data items that are arranged in a list."""
 
@@ -455,6 +456,7 @@ ModalityDataParser: TypeAlias = Callable[
 ]
 
 
+# 说明：核心方法 parse_mm_data
 class MultiModalDataParser:
     """
     Parses [`MultiModalDataDict`][vllm.multimodal.inputs.MultiModalDataDict]
@@ -491,6 +493,7 @@ class MultiModalDataParser:
         self.video_needs_metadata = video_needs_metadata
         self.expected_hidden_size = expected_hidden_size
 
+    # 问题：embeddings 的维度是如何定义的？也是 [batch_size, seq_len, feature_size] 吗？
     @classmethod
     def is_embeddings(
         cls, data: object
@@ -680,6 +683,9 @@ class MultiModalDataParser:
             "vision_chunk": self._parse_vision_chunk_data,
         }
 
+    # 已阅
+    # 说明：MultiModalDataDict 是根据模态类型组织的输入数据字典，value 可能是单个数据项或数据项列表；
+    # MultiModalDataItems 是根据模态类型组织的、经过解析后的数据项，value 始终是 ModalityDataItems 实例，表示该模态的数据项列表；
     def parse_mm_data(self, mm_data: MultiModalDataDict) -> MultiModalDataItems:
         subparsers = self._get_subparsers()
 

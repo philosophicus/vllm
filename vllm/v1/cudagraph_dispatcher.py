@@ -67,6 +67,7 @@ class CudagraphDispatcher:
         # Default cudagraph_mode to NONE until initialize_cudagraph_keys is called
         self.cudagraph_mode = CUDAGraphMode.NONE
 
+    # 已阅
     def _compute_bs_to_padded_graph_size(self) -> None:
         """Pre-compute the mapping from batch size to padded graph size."""
         max_size = self.compilation_config.max_cudagraph_capture_size
@@ -99,6 +100,7 @@ class CudagraphDispatcher:
                             "Use values from cudagraph_capture_sizes."
                         )
 
+    # 已阅
     def _get_lora_cases(self) -> list[int]:
         """
         Returns list of has_lora values for CUDA graph capture.
@@ -120,6 +122,9 @@ class CudagraphDispatcher:
             # No specialization: only capture graphs with LoRA active
             return [lora_config.max_loras + 1]
 
+    # 已阅
+    # 理解：uniform_decode 表示是否是均匀解码场景。均匀解码场景下，
+    # 每个序列的解码长度相同，等于 uniform_decode_query_len
     def _create_padded_batch_descriptor(
         self,
         num_tokens: int,
@@ -129,6 +134,7 @@ class CudagraphDispatcher:
     ) -> BatchDescriptor:
         max_num_seqs = self.vllm_config.scheduler_config.max_num_seqs
         uniform_decode_query_len = self.uniform_decode_query_len
+        # 说明：获得 num_tokens 对应的 padded cudagraph capture size
         num_tokens_padded = self._bs_to_padded_graph_size[num_tokens]
 
         if uniform_decode and self.cudagraph_mode.has_mode(CUDAGraphMode.FULL):
@@ -146,6 +152,7 @@ class CudagraphDispatcher:
             num_active_loras=num_active_loras,
         )
 
+    # 已阅
     def add_cudagraph_key(
         self, runtime_mode: CUDAGraphMode, batch_descriptor: BatchDescriptor
     ):
@@ -154,6 +161,7 @@ class CudagraphDispatcher:
         )
         self.cudagraph_keys[runtime_mode].add(batch_descriptor)
 
+    # 已阅
     def initialize_cudagraph_keys(
         self, cudagraph_mode: CUDAGraphMode, uniform_decode_query_len: int = 1
     ):
@@ -194,12 +202,19 @@ class CudagraphDispatcher:
         # mode full cudagraphs then add them here.
         if (
             cudagraph_mode.decode_mode() == CUDAGraphMode.FULL
+            # 说明：此时 mixed mode 为 NONE 或 PIECEWISE
+            # 问题：mixed mode 为 NONE 或 PIECEWISE 对请求数量无限制？
+            # 所以用 uniform_decode=True 来计算 key？
             and cudagraph_mode.separate_routine()
         ):
+            # 说明：使用 uniform_decode_query_len 和 max_num_seqs 计算出最大值
             max_num_tokens = (
                 uniform_decode_query_len
                 * self.vllm_config.scheduler_config.max_num_seqs
             )
+            # 说明：过滤出适合 decode 的 cudagraph capture sizes，范围在
+            # [uniform_decode_query_len, max_num_tokens]，即对应的请求数量在
+            # [1, max_num_seqs] 范围内
             cudagraph_capture_sizes_for_decode = [
                 x
                 for x in self.compilation_config.cudagraph_capture_sizes

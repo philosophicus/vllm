@@ -560,6 +560,7 @@ class DeepseekV2Attention(nn.Module):
         return output
 
 
+# 已阅
 class DeepseekV32IndexerCache(torch.nn.Module, AttentionLayerBase):
     def __init__(
         self, head_dim: int, dtype: torch.dtype, prefix: str, cache_config: CacheConfig
@@ -679,6 +680,7 @@ class Indexer(nn.Module):
             k, [self.rope_dim, self.head_dim - self.rope_dim], dim=-1
         )
 
+        # 说明：论文中的 partially apply RoPE
         q_pe, k_pe = rotary_emb(positions, q_pe, k_pe.unsqueeze(1))
         # Note: RoPE (NeoX) can introduce extra leading dimensions during compilation
         # so we need to reshape back to token-flattened shapes
@@ -702,8 +704,11 @@ class Indexer(nn.Module):
         q_fp8 = q_fp8.view(-1, self.n_head, self.head_dim)
         q_scale = q_scale.view(-1, self.n_head, 1)
 
+        # 说明：weights shape 是 [num_tokens, n_head]
         weights, _ = self.weights_proj(hidden_states)
         weights = (
+            # 说明：注意这里 weights 包含 q_scale 和 softmax_scale，同时又乘以了一个 self.n_head**-0.5
+            # https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp/blob/main/inference/model.py#L478
             weights.unsqueeze(-1) * q_scale * self.softmax_scale * self.n_head**-0.5
         )
         weights = weights.squeeze(-1)

@@ -23,6 +23,7 @@ else:
     GPTQMarlinConfig = object
 
 
+# 已阅
 # Match dynamic rules with module name (prefix) and override quantize
 # config if module (prefix) matches a rule
 def override_config(config: GPTQConfig | GPTQMarlinConfig, prefix: str):
@@ -59,6 +60,7 @@ def override_config(config: GPTQConfig | GPTQMarlinConfig, prefix: str):
             )
 
 
+# 说明：找到匹配的 GPTQModel 中的 Dynamic 规则，返回 key 对应的值（或默认值）
 def get_dynamic_override(
     config: GPTQConfig | GPTQMarlinConfig,
     layer_name: str,
@@ -80,6 +82,7 @@ def get_dynamic_override(
     return default_value
 
 
+# 已阅
 def is_layer_gptq_quantized(
     prefix: str,
     quantized_layers: list[str],
@@ -94,11 +97,19 @@ def is_layer_gptq_quantized(
 
     proj_name = prefix.split(".")[-1]
 
+    # 说明：unfuse 之后的所有 shard 需要具有一致的量化方案，要么都量化，要么都不量化
     # Fused layers like gate_up_proj or qkv_proj will not be fused
     # in the safetensors checkpoint. So, we convert the name
     # from the fused version to unfused + check to make sure that
     # each shard of the fused layer has the same scheme.
     if proj_name in fused_mapping:
+        # 说明：unfuse 后的 prefix 列表
+        # model.layers.0.self_attn.qkv_proj -> 
+        # [
+        #   model.layers.0.self_attn.q_proj,
+        #   model.layers.0.self_attn.k_proj,
+        #   model.layers.0.self_attn.v_proj,
+        # ]
         shard_prefixes = [
             prefix.replace(proj_name, shard_proj_name)
             for shard_proj_name in fused_mapping[proj_name]
@@ -125,6 +136,8 @@ def is_layer_gptq_quantized(
     return is_quantized
 
 
+# 已阅
+# 说明：可以对照 get_moe_quant_method 一起看
 def get_linear_quant_method(
     config: GPTQConfig | GPTQMarlinConfig,
     layer: torch.nn.Module,

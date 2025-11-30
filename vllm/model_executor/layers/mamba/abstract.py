@@ -12,6 +12,7 @@ from vllm.v1.attention.selector import get_mamba_attn_backend
 from vllm.v1.kv_cache_interface import KVCacheSpec, MambaSpec
 
 
+# 已阅
 class MambaBase(AttentionLayerBase):
     """
     Base class for Mamba-like layers which support the v1 engine.
@@ -40,6 +41,7 @@ class MambaBase(AttentionLayerBase):
     def get_state_dtype(self) -> tuple[torch.dtype, ...]:
         pass
 
+    # 已阅
     def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec | None:
         if (
             vllm_config.speculative_config is not None

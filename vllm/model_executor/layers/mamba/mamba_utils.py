@@ -29,6 +29,7 @@ class MambaStateDtypeCalculator:
         state_dtype = get_kv_cache_torch_dtype(mamba_cache_dtype, model_dtype)
         return (state_dtype,)
 
+    # 已阅
     @classmethod
     def mamba1_state_dtype(
         cls,
@@ -40,6 +41,7 @@ class MambaStateDtypeCalculator:
             model_dtype, mamba_cache_dtype, mamba_ssm_cache_dtype
         )
 
+    # 已阅
     @classmethod
     def mamba2_state_dtype(
         cls,
@@ -51,6 +53,7 @@ class MambaStateDtypeCalculator:
             model_dtype, mamba_cache_dtype, mamba_ssm_cache_dtype
         )
 
+    # 已阅
     @classmethod
     def _mamba_state_dtype(
         cls,
@@ -105,6 +108,7 @@ class MambaStateShapeCalculator:
         state_shape = (num_heads // tp_size, head_dim, head_dim)
         return (state_shape,)
 
+    # 已阅
     @classmethod
     def mamba1_state_shape(
         cls,
@@ -115,12 +119,14 @@ class MambaStateShapeCalculator:
     ) -> tuple[tuple[int, int], tuple[int, int]]:
         conv_state_shape = (divide(intermediate_size, tp_world_size), conv_kernel - 1)
 
+        # 说明：(P, N)
         temporal_state_shape = (divide(intermediate_size, tp_world_size), state_size)
 
         conv_state_shape = conv_state_shape[1], conv_state_shape[0]
 
         return conv_state_shape, temporal_state_shape
 
+    # 已阅
     @classmethod
     def mamba2_state_shape(
         cls,
@@ -144,6 +150,7 @@ class MambaStateShapeCalculator:
         # These are not TP-ed as they depend on A, dt_bias, D
         # - they are typically small
         #   e.g., (h_heads, head_dim, state_size) = (128, 64, 128)
+        # 说明：与上面注释不一致，num_heads 也做了 shard 
         temporal_state_shape = (divide(num_heads, tp_world_size), head_dim, state_size)
         return conv_state_shape, temporal_state_shape
 
@@ -158,6 +165,7 @@ class MambaStateShapeCalculator:
         conv_state_shape = (conv_kernel - 1, conv_dim)
         return (conv_state_shape,)
 
+    # 已阅
     @classmethod
     def extra_groups_for_head_shards(cls, ngroups: int, tp_size: int):
         """Compute the increase in group numbers to account for
@@ -229,6 +237,7 @@ class MambaStateShapeCalculator:
         )
 
 
+# 已阅
 @dataclass
 class MambaCopySpec:
     """
@@ -258,28 +267,42 @@ Parameters:
 """
 
 
+# 已阅
 def get_conv_copy_spec(
     state: torch.Tensor,
+    # 说明：cache group 全部的 block ids
     block_ids: list[int],
+    # 说明：last_computed_token 所在 block 的 index
     cur_block_idx: int,
     num_accepted_tokens: int,
 ) -> MambaCopySpec:
     """Return a MambaCopySpec for copying a convolutional state slice."""
     src_block_id = block_ids[cur_block_idx]
+    # 说明：conv_state 完整的 shape 是 (block_idx, conv_kernel - 1, dim)，conv_kernel 的值默认为 4
+    # 理解：从 src_block 起始位置开始保存了 num_accepted_tokens 个 token 的状态，
+    # 因此从结尾 token 的位置，即 num_accepted_tokens - 1 开始拷贝；
+    # 同时也说明，last computed token 就是 num_accepted_tokens 中的第一个 token
+    # 问题：conv_state token 维度是值默认为 3，那么也就是说明 num_accepted_tokens 最大为 3？
     src_state = state[src_block_id, num_accepted_tokens - 1 :]
     return MambaCopySpec(
         start_addr=src_state.data_ptr(), num_elements=src_state.numel()
     )
 
 
+# 已阅
 def get_temporal_copy_spec(
     state: torch.Tensor,
+    # 说明：cache group 全部的 block ids
     block_ids: list[int],
+    # 说明：last_computed_token 所在 block 的 index
     cur_block_idx: int,
     num_accepted_tokens: int,
 ) -> MambaCopySpec:
     """Return a MambaCopySpec for copying a temporal state slice."""
+    # 说明：对于 ssm state/temporal state，每个 block 只保存了一个 token 的状态，
+    # 因此从末尾 block 的位置开始拷贝；last computed token 就是 num_accepted_tokens 中的第一个 token
     src_block_id = block_ids[cur_block_idx + num_accepted_tokens - 1]
+    # 说明：ssm_state 完整的 shape 是 (block_idx, head_dim, state_size) 或者 (block_idx, h_heads, head_dim, state_size)
     src_state = state[src_block_id]
     return MambaCopySpec(
         start_addr=src_state.data_ptr(), num_elements=src_state.numel()

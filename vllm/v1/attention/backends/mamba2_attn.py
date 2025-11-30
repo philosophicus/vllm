@@ -87,6 +87,7 @@ def compute_varlen_chunk_metadata(
     return cu_chunk_seqlens, last_chunk_indices_t, seq_idx_chunks_t
 
 
+# 已阅
 class Mamba2AttentionBackend(AttentionBackend):
     @staticmethod
     def get_name() -> str:
@@ -97,12 +98,17 @@ class Mamba2AttentionBackend(AttentionBackend):
         return Mamba2AttentionMetadataBuilder
 
 
+# 已阅
 @dataclass
 class Mamba2AttentionMetadata(BaseMambaAttentionMetadata):
+    # 说明：是否存在任何一个 initial state
     prep_initial_states: bool = False
+    # 说明：从 HF 模型配置的 mamba_chunk_size/chunk_size 字段或使用系统默认值 2048
+    # 具体见 vllm_config.model_config.get_mamba_chunk_size()
     chunk_size: int = 0
 
     # Chunk-related metadata (only for prefill)
+    # 说明：存储了每个 chunk 对应的 sequence idx
     seq_idx_p: torch.Tensor | None = None
     # cu_chunk_seqlen_p is a tensor of shape (nchunks+1,) that contains, for
     # each chunk, its offsets into the varlen sequence dimension. It is defined
@@ -114,6 +120,7 @@ class Mamba2AttentionMetadata(BaseMambaAttentionMetadata):
     last_chunk_indices_p: torch.Tensor | None = None
 
 
+# 已阅
 class Mamba2AttentionMetadataBuilder(
     BaseMambaAttentionMetadataBuilder[Mamba2AttentionMetadata]
 ):
@@ -153,8 +160,11 @@ class Mamba2AttentionMetadataBuilder(
         satisfy constraint (2).
         """
         # TODO (tdoublep): This code could probably be optimized.
+        # 说明：cu_chunk_seqlen 存储了每个 chunk 对应的 token 序列中的起始 token 在 varlen 序列中的位置
         cu_chunk_seqlen = []
+        # 说明：seq_idx 存储了每个 chunk 对应的 sequence idx
         seq_idx = []
+        # 说明：last_chunk_indices 存储了每个 sequence 的最后一个 chunk 在 seq_idx 中的 idx
         last_chunk_indices = []
         seqlen_pos = 0
 
@@ -195,6 +205,11 @@ class Mamba2AttentionMetadataBuilder(
 
         return cu_chunk_seqlen, seq_idx, last_chunk_indices
 
+    # 已阅
+    # 说明：相比 Mamba1 增加了 chunk 相关的元数据，chunk_size 来自 HF 模型配置的 mamba_chunk_size/chunk_size 字段或使用系统默认值；
+    # Mamba1 中也能看到一个 chunk 概念，其 chunk_size 为 8，是 conv1d kernel 中一个固定的参数 BLOCK_M；
+    # 两个 chunk 都是对 mamba_block_size 的细分，Mamba1 的 chunk 直接用于确定 kernel dim，
+    # 而 Mamba2 的 chunk 则是在 kernel 内部处理过程中进行分块处理
     def build(
         self,
         common_prefix_len: int,
