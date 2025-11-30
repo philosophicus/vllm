@@ -542,6 +542,7 @@ def current_stream() -> torch.cuda.Stream:
     return _current_stream_tls.value
 
 
+# 说明：关注辅助流的用途
 # Global auxilary stream for running operations in background streams.
 # We have single global auxilary stream to avoid an explosion of streams
 # for every layer (and make profiling look sane).
@@ -551,6 +552,7 @@ def current_stream() -> torch.cuda.Stream:
 _aux_stream: torch.cuda.Stream | None = None
 
 
+# 已阅
 def aux_stream() -> torch.cuda.Stream | None:
     """
     Ensures aux_stream is initialized only once

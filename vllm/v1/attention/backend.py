@@ -308,6 +308,7 @@ class AttentionImpl(ABC, Generic[T]):
 
     # some attention backends might not always want to return lse
     # even if they can return lse (for efficiency reasons)
+    # 说明：lse = LogSumExp
     need_to_return_lse_for_decode: bool = False
 
     # Whether this attention implementation supports pre-quantized query input.

@@ -12,6 +12,8 @@
 
 namespace vllm {
 
+// 已阅
+// 说明：一个 block 处理一个 sequence 的一段长度为 tile_size 的 vocab
 template <typename scalar_t>
 __global__ void apply_repetition_penalties_kernel(
     scalar_t* __restrict__ logits,         // [num_seqs, vocab_size]
@@ -602,6 +604,7 @@ static __global__ __launch_bounds__(kNumThreadsPerBlock) void topKPerRowDecode(
 
 }  // namespace vllm
 
+// 已阅
 void apply_repetition_penalties_(
     torch::Tensor& logits,             // [num_seqs, vocab_size], in-place
     const torch::Tensor& prompt_mask,  // [num_seqs, vocab_size]
@@ -622,6 +625,7 @@ void apply_repetition_penalties_(
   cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount,
                          logits.get_device());
 
+  // 说明：ceil(sms / num_seqs) 表示每个序列分配的 SM 数量
   // Compute tile_num and tile_size
   int tile_num =
       std::min(vocab_size, std::max(1, (sms + num_seqs - 1) / num_seqs));
@@ -629,6 +633,7 @@ void apply_repetition_penalties_(
 
   // Each block handles one sequence and a tile of vocab
   dim3 grid(num_seqs, tile_num);
+  // 说明：block 大小最多 1024 个线程
   dim3 block(std::min(tile_size, 1024));
   const at::cuda::OptionalCUDAGuard device_guard(device_of(logits));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();

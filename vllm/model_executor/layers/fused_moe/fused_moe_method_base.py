@@ -24,6 +24,14 @@ from vllm.model_executor.layers.quantization.base_config import (
 logger = init_logger(__name__)
 
 
+# 已阅
+# 说明：FusedMoEMethodBase 的作用是为 MoE 层创建权重；在 apply 方法中，
+# 先利用传入的 router，x 和 router_logits 执行 select experts，然后执行 MOE 前向计算逻辑（非模块化）
+# 说明：重点是 maybe_make_prepare_finalize 和 select_gemm_impl 方法，
+# 分别用来创建 PrepareAndFinalize 实例和选择合适的 GEMM 实现，它们用于创建出 FusedMoeModularKernel 实例，
+# 并在 FusedMoEModularMethod 中被使用（模块化）
+# get_fused_moe_quant_config 用于产生 MoE 量化配置，用于 PrepareAndFinalize 实例的创建
+# 说明：子类是每种量化方法的对应实现，如 GPTQMarlinFusedMoEMethod、AWQFusedMoEMethod 等
 class FusedMoEMethodBase(QuantizeMethodBase):
     def __init__(self, moe: FusedMoEConfig):
         super().__init__()
@@ -42,6 +50,8 @@ class FusedMoEMethodBase(QuantizeMethodBase):
     ):
         raise NotImplementedError
 
+    # 说明：weight_scale_2 模式是指 FP4 量化中使用的两级缩放因子模式，
+    # 其中第二级用于 Tensor 级别的全局缩放 
     def uses_weight_scale_2_pattern(self) -> bool:
         """
         Returns True if this quantization method uses 'weight_scale_2' pattern

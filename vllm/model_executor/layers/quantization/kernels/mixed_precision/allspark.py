@@ -15,9 +15,12 @@ from vllm.model_executor.parameter import BasevLLMParameter, permute_param_layou
 from .MPLinearKernel import MPLinearKernel, MPLinearLayerConfig
 
 
+# 说明：根据 PR https://github.com/vllm-project/vllm/pull/12931 的描述，仅支持
+# bits=8, group_size=-1 and desc_act=False 的 GPTQ 量化模型
 class AllSparkLinearKernel(MPLinearKernel):
     @classmethod
     def get_min_capability(cls) -> int:
+        # 说明：sm80 to sm89 (inclusive)
         return 80
 
     @classmethod

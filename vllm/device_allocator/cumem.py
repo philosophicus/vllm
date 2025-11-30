@@ -46,6 +46,7 @@ except ModuleNotFoundError:
     libcudart = None
 
 # py_device, py_alignedSize, py_d_mem, py_p_memHandle
+# 说明：（设备指针？，分配大小，设备内存指针，内存句柄？）
 HandleType = tuple[int, int, int, int]
 
 
@@ -84,6 +85,9 @@ def use_memory_pool_with_allocator(
         yield mem_pool, new_alloc
 
 
+# 待看
+# 说明：支撑实现 Sleep Mode 机制的内存池管理类
+# 单实例类
 class CuMemAllocator:
     """
     A singleton class that manages a memory pool for CUDA tensors.
@@ -141,6 +145,7 @@ class CuMemAllocator:
         self.python_malloc_callback = self._python_malloc_callback
         self.python_free_callback = self._python_free_callback
 
+    # 说明：分配内存的回调函数
     def _python_malloc_callback(self, allocation_handle: HandleType) -> None:
         """
         Internal method to store the allocation data
@@ -157,6 +162,7 @@ class CuMemAllocator:
         )
         return
 
+    # 说明：释放内存的回调函数
     def _python_free_callback(self, ptr: int) -> HandleType:
         """
         Internal method to look up the allocation data
@@ -238,6 +244,7 @@ class CuMemAllocator:
                 create_and_map(handle)
                 if data.cpu_backup_tensor is not None:
                     cpu_backup_tensor = data.cpu_backup_tensor
+                    # 问题：为什么要重复判断呢？
                     if cpu_backup_tensor is not None:
                         size_in_bytes = (
                             cpu_backup_tensor.numel() * cpu_backup_tensor.element_size()

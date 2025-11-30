@@ -52,6 +52,7 @@ class CompilationMode(enum.IntEnum):
     shape specialization, and custom passes."""
 
 
+# 已阅
 class CUDAGraphMode(enum.Enum):
     """Constants for the cudagraph mode in CompilationConfig.
     Meanwhile, the subset enum `NONE`, `PIECEWISE` and `FULL` are also
@@ -61,6 +62,7 @@ class CUDAGraphMode(enum.Enum):
     NONE = 0
     PIECEWISE = 1
     FULL = 2
+    # 说明：(decode_mode, mixed prefill-decode mode)
     FULL_DECODE_ONLY = (FULL, NONE)
     FULL_AND_PIECEWISE = (FULL, PIECEWISE)
 
@@ -507,11 +509,14 @@ class CompilationConfig:
     Warning: This flag is new and subject to change in addition
     more modes may be added.
     """
+    # 说明：warmup 的目的是通过一次或多次预执行完成 GPU 资源初始化、资源分配、内核编译与缓存等准备工作，
+    # 确保后续正式执行时达到最佳性能。
     cudagraph_num_of_warmups: int = 0
     """Number of warmup runs for cudagraph.
     It means the first several runs will be treated as warmup runs.
     Only after that, the execution will be recorded, and the recorded
     cudagraph will be used for subsequent runs."""
+    # 说明：如何 inferred 参考 max_cudagraph_capture_size 字段的说明
     cudagraph_capture_sizes: list[int] | None = None
     """Sizes to capture cudagraph.
     - None (default): capture sizes are inferred from vllm config.
@@ -1073,12 +1078,19 @@ class CompilationConfig:
         assert "none" in self.custom_ops
         return f"+{op}" in self.custom_ops
 
+    # 已阅
+    # 说明：uniform_decode_query_len = 1 + num_speculative_tokens > 1；
+    # 根据 uniform_decode_query_len 和 max_cudagraph_capture_size 
+    # 对 self.cudagraph_capture_sizes 进行 round up 调整，
+    # 并更新 self.max_cudagraph_capture_size 为调整后的最大值
     def adjust_cudagraph_sizes_for_spec_decode(
         self, uniform_decode_query_len: int, tensor_parallel_size: int
     ):
         multiple_of = uniform_decode_query_len
         if tensor_parallel_size > 1 and self.pass_config.enable_sp:
             multiple_of = max(uniform_decode_query_len, tensor_parallel_size)
+            # 说明：multiple_of 需要是 uniform_decode_query_len 和
+            # tensor_parallel_size 的倍数
             if (
                 multiple_of % uniform_decode_query_len != 0
                 or multiple_of % tensor_parallel_size != 0
@@ -1096,6 +1108,8 @@ class CompilationConfig:
             return
 
         assert self.max_cudagraph_capture_size is not None
+        # 说明：每一个 rounded_size 都需要是 multiple_of 的倍数，
+        # 且不能超过 max_cudagraph_capture_size
         rounded_sizes = sorted(
             set(
                 round_up(size, multiple_of)
@@ -1104,6 +1118,7 @@ class CompilationConfig:
             )
         )
 
+        # 说明：不存在可 round up 的 size 时，使用 multiple_of 作为唯一的 size
         if len(rounded_sizes) == 0 and multiple_of <= self.max_cudagraph_capture_size:
             # if one valid but would be round_down use that
             rounded_sizes = [multiple_of]
@@ -1123,11 +1138,19 @@ class CompilationConfig:
         # Recompute after adjusting the cudagraph sizes
         self.compute_bs_to_padded_graph_size()
 
+    # 已阅
+    # 说明：预计算从 batch size 映射到 padded graph size 的映射关系
+    # 每个 batch size 对于不小于它的最小 cudagraph size
+    # 理解：这里的 batch size 是指多个请求整体的 query token length (包含 spec token)，
+    # 因为 num_reqs = num_tokens_padded // uniform_decode_query_len
+    # 其中 num_tokens_padded 即根据 batch_size 获取的 padded_graph_size
     def compute_bs_to_padded_graph_size(self):
         # pre-compute the mapping from batch size to padded graph size
         self.bs_to_padded_graph_size = [
             0 for i in range(self.max_cudagraph_capture_size + 1)
         ]
+        # 说明：错位后遍历 cudagraph_capture_sizes 列表，
+        # 对每个范围内的 bs 进行填充
         for end, start in zip(
             self.cudagraph_capture_sizes + [self.max_cudagraph_capture_size + 1],
             [0] + self.cudagraph_capture_sizes,

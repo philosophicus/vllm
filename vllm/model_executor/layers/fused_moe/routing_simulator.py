@@ -19,6 +19,7 @@ from vllm.logger import init_logger
 logger = init_logger(__name__)
 
 
+# 已阅
 class RoutingStrategy(ABC):
     """Base class for token-to-expert routing strategies."""
 
@@ -45,6 +46,8 @@ class RoutingStrategy(ABC):
         pass
 
 
+# 已阅
+# 说明：根据不同的分布随机选择专家的路由策略
 class DistributionBasedRouting(RoutingStrategy):
     """
     Distribution-based random routing strategy with configurable distributions.
@@ -54,6 +57,7 @@ class DistributionBasedRouting(RoutingStrategy):
     distributions for testing different routing patterns.
     """
 
+    # 已阅
     def __init__(self, distribution: str = "uniform", **distribution_params: Any):
         """
         Initialize distribution-based routing.
@@ -73,6 +77,7 @@ class DistributionBasedRouting(RoutingStrategy):
         # Validate distribution and parameters
         self._validate_distribution_params()
 
+    # 已阅
     def _validate_distribution_params(self):
         """Validate distribution type and parameters."""
         valid_distributions = ["uniform", "normal"]
@@ -88,6 +93,7 @@ class DistributionBasedRouting(RoutingStrategy):
             self.distribution_params.setdefault("mean", 0.0)
             self.distribution_params.setdefault("std", 1.0)
 
+    # 已阅
     def route_tokens(
         self,
         hidden_states: torch.Tensor,
@@ -125,6 +131,7 @@ class DistributionBasedRouting(RoutingStrategy):
 
         return topk_weights, topk_ids
 
+    # 已阅
     def _sample_expert_ids(
         self,
         num_tokens: int,
@@ -163,6 +170,7 @@ class DistributionBasedRouting(RoutingStrategy):
         else:
             raise ValueError(f"Unsupported distribution: {self.distribution}")
 
+    # 已阅
     def _sample_continuous_distribution(
         self, num_tokens: int, top_k: int, device: torch.device
     ) -> torch.Tensor:
@@ -179,6 +187,7 @@ class DistributionBasedRouting(RoutingStrategy):
                 f"Unsupported continuous distribution: {self.distribution}"
             )
 
+    # 已阅
     def _normalize_samples(self, samples: torch.Tensor) -> torch.Tensor:
         """Normalize samples to [0, 1] range."""
         if self.distribution == "normal":
@@ -190,6 +199,7 @@ class DistributionBasedRouting(RoutingStrategy):
                 f"Unsupported distribution for normalization: {self.distribution}"
             )
 
+    # 已阅
     def _generate_weights(
         self, num_tokens: int, top_k: int, device: torch.device
     ) -> torch.Tensor:
@@ -226,6 +236,7 @@ class DistributionBasedRouting(RoutingStrategy):
         }
 
 
+# 已阅
 class RoutingSimulator:
     """
     Token-to-Expert Routing Simulator.

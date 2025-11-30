@@ -26,6 +26,7 @@ def _convert_tokens_to_string_with_added_encoders(
     # localize frequently used objects;
 
     sub_texts: list[str] = []
+    # 将非 special token 拼接在一起
     current_sub_text: list[str] = []
     convert_tokens_to_string = tokenizer.convert_tokens_to_string
     added_vocab_set = set(tokenizer.get_added_vocab())
@@ -39,6 +40,7 @@ def _convert_tokens_to_string_with_added_encoders(
             continue
         if token in added_vocab_set:
             if current_sub_text:
+                # 遇到 special token 之前，先把之前的非 special token 拼接成字符串
                 sub_texts.append(convert_tokens_to_string(current_sub_text))
                 current_sub_text.clear()
             sub_texts.append(token)
@@ -69,6 +71,7 @@ def convert_prompt_ids_to_tokens(
     """
     # We do not need to convert the whole prompt to tokens.
     # Offset a little more in case we have special tokens.
+    # 补充：以上是 -2 的原因
     new_tokens = tokenizer.convert_ids_to_tokens(
         prompt_ids[-INITIAL_INCREMENTAL_DETOKENIZATION_OFFSET - 2 :],
         skip_special_tokens=skip_special_tokens,
@@ -158,6 +161,7 @@ def detokenize_incrementally(
         if isinstance(new_tokens, str):
             new_tokens = [new_tokens]
     else:
+        # Since the new token id is out of bounds, return an empty string.
         new_tokens = [""]
     output_tokens = prev_tokens + new_tokens
 
@@ -168,6 +172,7 @@ def detokenize_incrementally(
     # The prefix text is necessary only to defeat cleanup algorithms in
     # the decode which decide to add a space or not depending on the
     # surrounding ids.
+    # 如受到 spaces_between_special_tokens 的影响，特殊 token 两侧可能会有空格
     if tokenizer.is_fast or not tokenizer.get_added_vocab():
         prefix_text = tokenizer.convert_tokens_to_string(
             output_tokens[prefix_offset:read_offset]

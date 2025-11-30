@@ -70,6 +70,8 @@ class BlockHashToBlockMap:
             self._unexpected_blocks_type(blocks)
         return None
 
+    # 已阅
+    # 说明：处理 duplicated block 的逻辑
     def insert(self, key: BlockHashWithGroupId, block: KVCacheBlock) -> None:
         """
         Inserts the KVCacheBlock to the cache
@@ -125,6 +127,8 @@ class BlockHashToBlockMap:
         raise AssertionError(f"Invalid KV cache block type {type(blocks)}")
 
 
+# 说明：逻辑 block 池，参数 num_gpu_blocks 来自 kv_cache_config.num_blocks，
+# 而 kv_cache_config.num_blocks 为逻辑 block 数
 class BlockPool:
     """BlockPool that manages KVCacheBlocks.
     It provides methods to allocate, free and cache the kv cache blocks. The
@@ -179,6 +183,8 @@ class BlockPool:
 
         self.metrics_collector = metrics_collector
 
+    # 已阅
+    # 说明：按 kv_cache_group_ids 顺序，返回每个组对应的 cached block，组成列表。有一个组没命中就整体 None
     def get_cached_block(
         self, block_hash: BlockHash, kv_cache_group_ids: list[int]
     ) -> list[KVCacheBlock] | None:
@@ -206,6 +212,7 @@ class BlockPool:
             cached_blocks.append(block)
         return cached_blocks
 
+    # 已阅
     def cache_full_blocks(
         self,
         request: Request,
@@ -250,6 +257,7 @@ class BlockPool:
             )
 
         new_block_hashes = block_hashes[num_cached_blocks:]
+        # 补充：Collect new block hashes for KV cache events.
         new_hashes: list[ExternalBlockHash] | None = (
             [] if self.enable_kv_cache_events else None
         )
@@ -296,6 +304,7 @@ class BlockPool:
                 )
             )
 
+    # 已阅
     def get_new_blocks(self, num_blocks: int) -> list[KVCacheBlock]:
         """Get new blocks from the free block pool.
 
@@ -315,6 +324,8 @@ class BlockPool:
         # In order to only iterate the list once, we duplicated code a bit
         if self.enable_caching:
             for block in ret:
+                # 新 block 的原有内容已经不能再作为其他请求的 prefix cache，如果它在 cached_block_hash_to_block 中
+                # 则需要把它从缓存中移除
                 self._maybe_evict_cached_block(block)
                 assert block.ref_cnt == 0
                 block.ref_cnt += 1
@@ -328,6 +339,7 @@ class BlockPool:
                     self.metrics_collector.on_block_allocated(block)
         return ret
 
+    # 已阅
     def _maybe_evict_cached_block(self, block: KVCacheBlock) -> bool:
         """
         If a block is cached in `cached_block_hash_to_block`, we reset its hash
@@ -368,6 +380,7 @@ class BlockPool:
             )
         return True
 
+    # 已阅
     def touch(self, blocks: Sequence[KVCacheBlock]) -> None:
         """Touch a block increases its reference count by 1, and may remove
         the block from the free queue. This is used when a block is hit by
@@ -385,6 +398,7 @@ class BlockPool:
             if self.metrics_collector:
                 self.metrics_collector.on_block_accessed(block)
 
+    # 已阅
     def free_blocks(self, ordered_blocks: Iterable[KVCacheBlock]) -> None:
         """Free a list of blocks. The blocks should be ordered by their
         eviction priority, where the first block will be evicted first.

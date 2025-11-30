@@ -10,6 +10,8 @@ import torch
 from vllm.utils.torch_utils import is_torch_equal_or_newer
 
 
+# 已阅
+# 说明：不会覆盖 weight 中已有的属性
 def set_weight_attrs(
     weight: torch.Tensor,
     weight_attrs: dict[str, Any] | None,

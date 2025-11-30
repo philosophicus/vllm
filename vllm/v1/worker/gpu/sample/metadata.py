@@ -79,6 +79,7 @@ class SamplingMetadata:
         )
 
 
+# 已阅
 # NOTE(woosuk): Re-compilation can happen at runtime since top_p and top_k can be None.
 @triton.jit
 def _expand_sampling_metadata_kernel(
@@ -137,6 +138,8 @@ def _expand_sampling_metadata_kernel(
     tl.store(expanded_seeds_ptr + start_idx + block, seed, mask=mask)
 
 
+# 已阅
+# 说明：将采样元数据根据每个请求的 token 数量进行扩展，使得每个 token 都有对应的采样参数
 def expand_sampling_metadata(
     sampling_metadata: SamplingMetadata,
     cu_num_logits: torch.Tensor,

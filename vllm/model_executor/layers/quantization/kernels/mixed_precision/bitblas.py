@@ -28,6 +28,7 @@ logger = init_logger(__name__)
 class BitBLASLinearKernel(MPLinearKernel):
     OPT_FEATURES: list[int] = BITBLAS_OPTIMIZE_FEATURES
     ENABLE_TUNING: bool = True
+    # 说明：激活矩阵是未转置的（[M, K]，列主序），权重矩阵是转置的（[N, K]，列主序；相当于 [K, N] 时行主序）
     MATMUL_LAYOUT: str = "nt"
     BITBLAS_DTYPES: dict[torch.dtype, str] = {
         torch.float32: "float32",

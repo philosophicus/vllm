@@ -365,6 +365,7 @@ def fused_qk_norm_rope(
     )
 
 
+# 已阅
 def apply_repetition_penalties_torch(
     logits: torch.Tensor,
     prompt_mask: torch.Tensor,
@@ -381,6 +382,7 @@ def apply_repetition_penalties_torch(
     logits *= scaling
 
 
+# 已阅
 def apply_repetition_penalties_cuda(
     logits: torch.Tensor,
     prompt_mask: torch.Tensor,
@@ -392,6 +394,7 @@ def apply_repetition_penalties_cuda(
     )
 
 
+# 已阅
 def apply_repetition_penalties(
     logits: torch.Tensor,
     prompt_mask: torch.Tensor,
@@ -2197,6 +2200,7 @@ def topk_softmax(
     )
 
 
+# 已阅
 def grouped_topk(
     scores: torch.Tensor,
     num_expert_group: int,
@@ -2224,6 +2228,8 @@ def grouped_topk(
         raise NotImplementedError(
             "The fused grouped_topk kernel is only available on CUDA platforms"
         )
+    # 说明：实现见 std::tuple<torch::Tensor, torch::Tensor> grouped_topk 函数，
+    # 内部调用了 void invokeNoAuxTc 函数，其中 tc 表示 Traffic Controller
     return torch.ops._moe_C.grouped_topk(
         scores,
         num_expert_group,
@@ -2444,6 +2450,7 @@ def concat_and_cache_mla_rope_fused(
     )
 
 
+# 已阅
 def swap_blocks(
     src: torch.Tensor, dst: torch.Tensor, block_mapping: torch.Tensor
 ) -> None:

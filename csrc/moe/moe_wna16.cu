@@ -32,6 +32,7 @@ __global__ void moe_wna16_gemm_kernel(
 #endif
 
     using Dtype = ScalarType<scalar_t>;
+    // 说明：scalar_t2 是两个 scalar_t 组成的向量类型
     using scalar_t2 = typename ScalarType<scalar_t>::scalar_t2;
 
     if (blockIdx.x * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return;
@@ -234,9 +235,11 @@ void run_moe_wna16_gemm(const scalar_t* input, scalar_t* output,
                         int BLOCK_SIZE_N, int BLOCK_SIZE_K, int bit,
                         bool has_zp, bool mul_topk_weight) {
   dim3 blockDim, gridDim;
+  // 说明：一个 block 中的线程数等于 BLOCK_SIZE_N
   blockDim.x = BLOCK_SIZE_N;
   blockDim.y = 1;
   blockDim.z = 1;
+  // 说明：一个 grid 处理
   gridDim.x = num_token_blocks;
   gridDim.y = DIVIDE(size_n, BLOCK_SIZE_N);
   gridDim.z = DIVIDE(size_k, BLOCK_SIZE_K);
@@ -283,10 +286,13 @@ torch::Tensor moe_wna16_gemm(torch::Tensor input, torch::Tensor output,
   const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
   output.zero_();
 
+  // 说明：b_qweight 的 shape 为 (num_experts, N, K // pack_factor)
   const int num_experts = b_qweight.size(0);
+  // 说明：input 的 shape 为 (M, K)
   const int size_m = input.size(0);
   const int size_n = b_qweight.size(1);
   const int size_k = input.size(1);
+  // 说明：b_scales 的 shape 为 (num_experts, N, K // group_size)
   const int group_size = size_k / b_scales.size(2);
 
   int64_t EM = sorted_token_ids.size(0);

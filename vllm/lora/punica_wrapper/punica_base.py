@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from vllm.lora.layers import LoRAMapping
 
 
+# 已阅
 class PunicaWrapperABC(ABC):
     """
     PunicaWrapper ABC.
@@ -121,6 +122,7 @@ class PunicaWrapperABC(ABC):
         raise NotImplementedError
 
 
+# 说明：为 Punica kennel 管理和提供元数据
 class PunicaWrapperBase(PunicaWrapperABC):
     """
     PunicaWrapperBase is designed to manage and provide metadata for the punica

@@ -254,11 +254,14 @@ class MoeWNA16Method(FusedMoEMethodBase):
         wrapped_weight_loader = MoeWNA16Method.get_weight_loader(layer, weight_loader)
         extra_weight_attrs["weight_loader"] = wrapped_weight_loader
 
+        # 说明：shape 为 (num_experts, 2 * N, K // pack_factor)
         # Fused gate_up_proj (column parallel)
         w13_qweight = torch.nn.Parameter(
             torch.empty(
                 num_experts,
+                # 说明：按照输出维度切分，column parallel
                 2 * intermediate_size_per_partition,
+                # 说明：对输入维度做 pack
                 hidden_size // bit8_pack_factor,
                 dtype=torch.uint8,
             ),
@@ -272,6 +275,8 @@ class MoeWNA16Method(FusedMoEMethodBase):
             torch.empty(
                 num_experts,
                 hidden_size,
+                # 说明：按照输入维度切分，row parallel
+                # 说明：对输入维度做 pack
                 intermediate_size_per_partition // bit8_pack_factor,
                 dtype=torch.uint8,
             ),
@@ -280,10 +285,12 @@ class MoeWNA16Method(FusedMoEMethodBase):
         layer.register_parameter("w2_qweight", w2_qweight)
         set_weight_attrs(w2_qweight, extra_weight_attrs)
 
+        # 说明：scale 的 dtype 为 params_dtype，非低 bit 量化，不做 pack
         w13_scales = torch.nn.Parameter(
             torch.zeros(
                 num_experts,
                 2 * intermediate_size_per_partition,
+                # 说明：对输入维度做分组
                 hidden_size // group_size,
                 dtype=params_dtype,
             ),
@@ -296,6 +303,7 @@ class MoeWNA16Method(FusedMoEMethodBase):
             torch.zeros(
                 num_experts,
                 hidden_size,
+                # 说明：对输入维度做分组
                 intermediate_size_per_partition // group_size,
                 dtype=params_dtype,
             ),
@@ -308,7 +316,9 @@ class MoeWNA16Method(FusedMoEMethodBase):
             w13_qzeros = torch.nn.Parameter(
                 torch.zeros(
                     num_experts,
+                    # 说明：zero points 对输出维度做 pack
                     2 * intermediate_size_per_partition // bit8_pack_factor,
+                    # 说明：对输入维度做分组
                     hidden_size // group_size,
                     dtype=torch.uint8,
                 ),
@@ -320,7 +330,9 @@ class MoeWNA16Method(FusedMoEMethodBase):
             w2_qzeros = torch.nn.Parameter(
                 torch.zeros(
                     num_experts,
+                    # 说明：zero points 对输出维度做 pack
                     hidden_size // bit8_pack_factor,
+                    # 说明：对输入维度做分组
                     intermediate_size_per_partition // group_size,
                     dtype=torch.uint8,
                 ),
@@ -359,6 +371,8 @@ class MoeWNA16Method(FusedMoEMethodBase):
             w2_scale=layer.w2_scales,
             w1_zp=layer.w13_qzeros if has_zp else None,
             w2_zp=layer.w2_qzeros if has_zp else None,
+            # 问题：GroupShape 中的 row = 0, col = layer.group_size，
+            # 会导致 is_per_tensor、is_per_token、is_per_group 均返回 False；这样的 shape 有何意义？
             block_shape=[0, layer.group_size],
         )
 
@@ -425,8 +439,10 @@ class MoeWNA16Method(FusedMoEMethodBase):
             # qzeros shape -> (4 * b, a)
 
             if tensor_type == "qweight":
+                # 说明：weights 对输入维度做 pack
                 tensor = tensor[:, 1::2] * 16 + tensor[:, ::2]
             elif tensor_type == "qzeros":
+                # 说明：qzeros 对输出维度做 pack
                 tensor = tensor[1::2, :] * 16 + tensor[::2, :]
             return tensor
 
@@ -444,6 +460,8 @@ class MoeWNA16Method(FusedMoEMethodBase):
             weight_name: str,
             shard_id: str,
             expert_id: int,
+            # 说明：return_success = True 表示返回加载成功的布尔值，True 表示加载成功，False 表示加载失败；
+            # 否则返回 None
             return_success: bool = False,
         ):
             if "g_idx" in weight_name:
@@ -465,10 +483,12 @@ class MoeWNA16Method(FusedMoEMethodBase):
                 elif "zeros" in weight_name:
                     loaded_weight = convert_awq_tensor(loaded_weight, "qzeros")
                 else:
+                    # 说明：scales 的权重，转置后 shape 为 (num_experts, output_dim, input_dim // group_size) 
                     loaded_weight = loaded_weight.T
             elif layer.quant_config.linear_quant_method == "gptq":
                 assert layer.quant_config.weight_bits in [4, 8]
                 if "weight" in weight_name:
+                    # 说明：qweight 的权重，转置后 shape 为 (num_experts, output_dim, input_dim // pack_factor)
                     loaded_weight = loaded_weight.T.contiguous().view(torch.uint8)
                 elif "zeros" in weight_name:
                     # add 1 to gptq qzeros to align with awq
@@ -478,6 +498,7 @@ class MoeWNA16Method(FusedMoEMethodBase):
                     else:
                         loaded_weight = loaded_weight.T + 1
                 else:
+                    # 说明：scales 的权重，转置后 shape 为 (num_experts, output_dim, input_dim // group_size) 
                     loaded_weight = loaded_weight.T
 
             # repeat the qzeros/scales to fit new group size

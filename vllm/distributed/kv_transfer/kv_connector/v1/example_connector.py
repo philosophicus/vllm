@@ -76,6 +76,7 @@ class ExampleConnectorMetadata(KVConnectorMetadata):
         is_store: bool,
         mm_hashes: list[str],
     ) -> None:
+        # 说明：mm_hashes 是多模态 hash 列表
         self.requests.append(
             ReqMeta.make_meta(token_ids, block_ids, block_size, is_store, mm_hashes)
         )
@@ -141,10 +142,12 @@ class ExampleConnector(KVConnectorBase_V1):
             if isinstance(attn_metadata, MLACommonMetadata):
                 num_pages = dst_kv_cache_layer_shape[0]
                 page_size = dst_kv_cache_layer_shape[1]
+                # 理解：这里的 dst_kv_cache_layer.reshape 应该是得返回 view 才有效
                 dst_kv_cache_layer = dst_kv_cache_layer.reshape(
                     num_pages * page_size, -1
                 )
                 dst_kv_cache_layer[slot_mapping, ...] = src_kv_cache
+                # 问题：这里 reshape 后没有赋值回去，是否有问题？
                 dst_kv_cache_layer.reshape(dst_kv_cache_layer_shape)
             else:
                 num_pages = dst_kv_cache_layer_shape[1]
@@ -153,6 +156,7 @@ class ExampleConnector(KVConnectorBase_V1):
                     2, num_pages * page_size, -1
                 )
                 dst_kv_cache_layer[:, slot_mapping, ...] = src_kv_cache
+                # 问题：这里 reshape 后没有赋值回去，是否有问题？
                 dst_kv_cache_layer.reshape(dst_kv_cache_layer_shape)
 
         # Get the metadata
@@ -188,6 +192,8 @@ class ExampleConnector(KVConnectorBase_V1):
                 if kv_cache_attr is None:
                     continue
 
+                # 说明：virtual engine 默认为 0
+                # bind_kv_cache 时，绑定的就是 forward_context[layer_name].kv_cache = [kv_cache]
                 kv_cache_layer = kv_cache_attr[forward_context.virtual_engine]
 
                 filename = self._generate_filename_debug(
@@ -398,6 +404,7 @@ class ExampleConnector(KVConnectorBase_V1):
         prompt_token_ids: list[int],
         mm_hashes: list[str],
     ) -> bool:
+        # 问题: 参数 prompt_token_ids 为什么减去 1 ？
         num_tokens_to_check = align_to_block_size(
             len(prompt_token_ids) - 1, self._block_size
         )
@@ -420,6 +427,7 @@ class ExampleConnector(KVConnectorBase_V1):
         token_bytes = token_ids.numpy().tobytes()
         # Add mm_hashes to the bytes being hashed to avoid path traversal and
         # to create a canonical key.
+        # 说明：canonical key 指的是唯一标识符
         if mm_hashes:
             mm_str = "-".join(mm_hashes)
             token_bytes += mm_str.encode("utf-8")
@@ -445,6 +453,7 @@ class ExampleConnector(KVConnectorBase_V1):
         return os.path.join(foldername, f"{layer_name}.safetensors")
 
 
+# 问题：对齐 block_size 的含义
 def align_to_block_size(num_tokens: int, block_size) -> int:
     """Align the number of tokens to the block size."""
     return (num_tokens - 1) // block_size * block_size

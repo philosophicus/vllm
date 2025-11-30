@@ -63,6 +63,7 @@ from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
 logger = init_logger(__name__)
 
 
+# 说明：V2 Model Runner
 class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
     def __init__(
         self,
@@ -179,6 +180,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
     def get_kv_cache_spec(self):
         return get_kv_cache_spec(self.vllm_config)
 
+    # 已阅
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         kv_cache_config = deepcopy(kv_cache_config)
         self.kv_cache_config = kv_cache_config
@@ -187,6 +189,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             for kv_cache_group in kv_cache_config.kv_cache_groups
         ]
 
+        # 说明：传入的是逻辑 block sizes，所以 block tables 中存储的是逻辑 block ids
         self.block_tables = BlockTables(
             block_sizes=block_sizes,
             max_num_reqs=self.max_num_reqs,
@@ -374,10 +377,15 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             self._dummy_run(self.max_num_tokens, skip_attn=False)
             torch.cuda.synchronize()
 
+    # 已阅，待看
+    # 说明：execute_model 方法的第一步
+    # 说明：更新请求状态 self.req_states 和 Block Tables
     def update_states(self, scheduler_output: SchedulerOutput) -> None:
         if scheduler_output.preempted_req_ids is not None:
+            # 说明：移除被抢占的请求
             for req_id in scheduler_output.preempted_req_ids:
                 self.req_states.remove_request(req_id)
+        # 说明：移除已完成的请求
         for req_id in scheduler_output.finished_req_ids:
             self.req_states.remove_request(req_id)
 
@@ -413,6 +421,16 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     req_index, req_new_block_ids, overwrite=False
                 )
 
+    # 已阅
+    # 说明：execute_model 方法的第二步
+    # 说明：准备模型输入，包括：
+    # - 对请求排序
+    # - 填充 input_ids 和 next_prefill_tokens
+    # - 准备 positions 和 seq_lens
+    # - 合并采样 token 和草稿 token，得到 logits_indices
+    # - 计算 slot_mappings
+    # - 构建每层的 attn_metadata（同一 kv cache group 中的层共享一个 CommonAttentionMetadata）
+    # - 返回一个包含所有有效数据的 InputBatch 实例
     def prepare_inputs(
         self,
         scheduler_output: SchedulerOutput,
@@ -424,14 +442,18 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         # Decode first, then prefill.
         # batch_idx -> req_id
+        # 问题：根据待解码token数排序请求，后面做 split_decodes_and_prefills 时可以直接按顺序处理？
         req_ids = sorted(
             scheduler_output.num_scheduled_tokens.keys(),
             key=lambda k: scheduler_output.num_scheduled_tokens[k],
         )
+        # 说明：每个请求的 scheduled token 数量（num_new_tokens 的数量）
+        # 请求的 num_scheduled_tokens 中包含 prefill tokens + sampled token + draft tokens（如果存在的话）
         num_scheduled_tokens = np.array(
             [scheduler_output.num_scheduled_tokens[i] for i in req_ids], dtype=np.int32
         )
 
+        # 说明：请求排序后，映射的索引的列表
         idx_mapping_list = [
             self.req_states.req_id_to_index[req_id] for req_id in req_ids
         ]
@@ -444,6 +466,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         if not scheduler_output.scheduled_spec_decode_tokens:
             # No draft token scheduled (common case).
             total_num_draft_tokens = 0
+            # 说明：每个 req 生成一个 token 的 logits
             total_num_logits = num_reqs
             cu_num_logits = torch.arange(
                 num_reqs + 1, device=self.device, dtype=torch.int32
@@ -462,11 +485,13 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
             np.cumsum(
                 num_draft_tokens + 1,
+                # 说明：指定存储位置，从 1 开始存储，位置 0 保持为 0
                 out=self.input_buffers.cu_num_logits.np[1 : num_reqs + 1],
             )
             cu_num_logits = self.input_buffers.cu_num_logits.copy_to_gpu(num_reqs + 1)
 
         # Block tables: num_kv_cache_groups x [num_reqs, max_num_blocks]
+        # 说明：获取 Block Tables，每个 Table 中包含 num_reqs 个请求的 block id 列表
         block_tables = self.block_tables.gather_block_tables(idx_mapping)
 
         # Get query_start_loc.
@@ -474,6 +499,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             num_scheduled_tokens,
             out=self.input_buffers.query_start_loc.np[1 : num_reqs + 1],
         )
+        # 调研：关注一下这里的非递减要求
         # Pad for full CUDA graph mode.
         # Some attention backends like FA3 require query_start_loc to be non-decreasing.
         self.input_buffers.query_start_loc.np[num_reqs + 1 :] = num_tokens
@@ -505,6 +531,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         # Some input token ids are directly read from the last sampled tokens
         # and draft tokens. Also, get the logits indices to sample tokens from.
+        # 说明：logits_indices 保存了每个 logit 在 input_ids 中的位置索引
         logits_indices = combine_sampled_and_draft_tokens(
             self.input_buffers.input_ids,
             idx_mapping,
@@ -851,6 +878,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             self.get_cudagraph_and_dp_padding(scheduler_output)
         )
         with async_barrier(self.input_prep_event):
+            # 说明：更新请求状态 self.req_states 和 Block Tables
             self.update_states(scheduler_output)
             if num_tokens_after_padding == 0:
                 # All DP ranks have zero tokens to run.
@@ -871,6 +899,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     input_batch.idx_mapping, input_batch.idx_mapping_np, pos
                 )
                 if input_batch.num_draft_tokens > 0:
+                    # 说明：将采样元数据根据每个请求的 token 数量进行扩展，使得每个 token 都有对应的采样参数
                     sampling_metadata = expand_sampling_metadata(
                         sampling_metadata,
                         input_batch.cu_num_logits,
@@ -879,6 +908,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
                 if self.lora_config:
                     # Activate LoRA adapters.
+                    # 说明：准备 LoRA 输入，返回值为
+                    #  (请求对应的 LoRA ID 列表，token 对应的 LoRA ID 列表，所有 active 的 LoRARequest)
                     lora_inputs = self.req_states.make_lora_inputs(
                         input_batch.req_ids,
                         input_batch.idx_mapping_np,

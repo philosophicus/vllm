@@ -44,6 +44,7 @@ def cuda_get_device_properties(
         return executor.submit(cuda_get_device_properties, device, names, True).result()
 
 
+# 已阅
 @cache
 def is_pin_memory_available() -> bool:
     from vllm.platforms import current_platform
@@ -51,6 +52,7 @@ def is_pin_memory_available() -> bool:
     return current_platform.is_pin_memory_available()
 
 
+# 已阅
 @cache
 def is_uva_available() -> bool:
     """Check if Unified Virtual Addressing (UVA) is available."""

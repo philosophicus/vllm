@@ -87,6 +87,8 @@ class DisabledTqdm(tqdm):
         super().__init__(*args, **kwargs)
 
 
+# 已阅
+# 说明：创建并返回 filelock 锁
 def get_lock(model_name_or_path: str | Path, cache_dir: str | None = None):
     lock_dir = cache_dir or temp_dir
     model_name_or_path = str(model_name_or_path)
@@ -100,6 +102,7 @@ def get_lock(model_name_or_path: str | Path, cache_dir: str | None = None):
     return lock
 
 
+# 已阅
 @contextmanager
 def atomic_writer(
     filepath: str | Path, mode: str = "w", encoding: str | None = None
@@ -973,6 +976,7 @@ def convert_pyslice_to_tensor(x: Any) -> torch.Tensor:
     return x
 
 
+# 已阅
 def default_weight_loader(param: torch.Tensor, loaded_weight: torch.Tensor) -> None:
     """Default weight loader."""
     try:
@@ -994,6 +998,7 @@ def default_weight_loader(param: torch.Tensor, loaded_weight: torch.Tensor) -> N
         raise
 
 
+# 已阅
 def row_parallel_weight_loader(
     param: torch.Tensor, loaded_weight: torch.Tensor
 ) -> None:
@@ -1012,6 +1017,7 @@ def row_parallel_weight_loader(
 LoaderFunction = Callable[[torch.Tensor, torch.Tensor], None]
 
 
+# 已阅
 def sharded_weight_loader(shard_axis: int) -> LoaderFunction:
     """Create a weight loader that shards the weights along the given axis"""
 

@@ -24,6 +24,7 @@ from vllm.utils.platform_utils import is_pin_memory_available
 logger = init_logger(__name__)
 
 
+# 说明：初始化 model
 def initialize_model(
     vllm_config: VllmConfig,
     *,
@@ -275,6 +276,8 @@ class ParamMapping:
         return None
 
 
+# 说明：packed_modules_mapping 传引用给 quant_config，
+# 内容示例为 {"qkv_proj": ["q_proj", "k_proj", "v_proj"]}
 def configure_quant_config(
     quant_config: QuantizationConfig, model_class: type[nn.Module]
 ):

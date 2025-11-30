@@ -34,6 +34,7 @@ MARLIN_SUPPORTED_GROUP_SIZES = [-1, 32, 64, 128]
 USE_FP32_REDUCE_DEFAULT = True
 
 
+# 已阅
 # For binary size and compile time, we don't support the same types for with and
 #  without runtime zero-point. We support common cases, i.e. AWQ and GPTQ.
 #  TODO: we may want to move this into the C++ so its closer to the actual impl
@@ -51,6 +52,7 @@ def query_marlin_supported_quant_types(
             -1 if capability_tuple is None else capability_tuple.to_int()
         )
 
+    # 说明：与 GPTQMarlinConfig 中的 get_min_capability 一致
     if device_capability < 75:
         return []
 
@@ -77,6 +79,7 @@ def query_marlin_supported_quant_types(
         return res
 
 
+# 已阅
 def _query_cpu_marlin_supported_quant_types(
     has_zp: bool | None = None,
     include_fp_type: bool = True,
@@ -104,6 +107,7 @@ def _query_cpu_marlin_supported_quant_types(
         return res
 
 
+# 已阅
 def _check_marlin_supported(
     quant_type: ScalarType,
     group_size: int | None,
@@ -139,6 +143,7 @@ def _check_marlin_supported(
     return True, None
 
 
+# 已阅
 def check_marlin_supported(
     quant_type: ScalarType,
     group_size: int,
@@ -149,6 +154,8 @@ def check_marlin_supported(
     return cond
 
 
+# 已阅
+# 说明：不支持 Marlin 时抛异常
 def verify_marlin_supported(
     quant_type: ScalarType, group_size: int, has_zp: bool = False
 ) -> None:
@@ -226,6 +233,7 @@ def check_marlin_supports_layer(layer: LinearBase, group_size: int) -> bool:
     )[0]
 
 
+# 已阅
 def check_moe_marlin_supports_layer(layer: LinearBase, group_size: int) -> bool:
     if current_platform.is_rocm():
         return False
@@ -288,9 +296,12 @@ def marlin_is_k_full(act_order: bool, is_row_parallel: bool) -> bool:
     return (not act_order) or (act_order and not is_row_parallel)
 
 
+# 已阅
+# 说明：是否需要在所有设备上重复 scales
 def marlin_repeat_scales_on_all_ranks(
     act_order: bool, group_size: int, is_row_parallel: bool
 ) -> bool:
+    # 说明：group_size = -1 表示 channel-wise quantization，每列有 input_size 个元素
     # Need to repeat scales on every rank if act_ordering or
     # channelwise and RowParallelLinear
     is_channelwise = group_size == -1
@@ -489,6 +500,7 @@ def should_use_atomic_add_reduce(
 _quant_fp8_method: QuantFP8 | None = None
 
 
+# 已阅
 def get__quant_fp8_method() -> QuantFP8:
     global _quant_fp8_method
     if _quant_fp8_method is None:
@@ -496,6 +508,8 @@ def get__quant_fp8_method() -> QuantFP8:
     return _quant_fp8_method
 
 
+# 已阅
+# 说明：W4A8
 def get_marlin_input_dtype(prefix: str | None = None):
     if envs.VLLM_MARLIN_INPUT_DTYPE is None:
         return
@@ -512,6 +526,7 @@ def get_marlin_input_dtype(prefix: str | None = None):
                 "(set VLLM_MARLIN_INPUT_DTYPE=int8)."
             )
 
+        # 说明：确保 QuantFP8 已初始化，用于对输入激活进行量化
         _ = get__quant_fp8_method()
         return torch.float8_e4m3fn
     else:
