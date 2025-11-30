@@ -10,6 +10,8 @@ from vllm.v1.attention.backends.utils import PAD_SLOT_ID
 from vllm.v1.utils import CpuGpuBuffer
 
 
+# 已阅
+# 说明：最新 V2 版的 block table 实现
 class BlockTables:
     def __init__(
         self,
@@ -33,6 +35,8 @@ class BlockTables:
         for i in range(self.num_kv_cache_groups):
             block_size = self.block_sizes[i]
             max_num_blocks = cdiv(self.max_model_len, block_size)
+            # 说明：block table 使用的就是逻辑 block size，V2 版本中不再出现 kernel block size 这一概念了
+            # 调研：需要深究一下原因
             block_table = torch.zeros(
                 self.max_num_reqs,
                 max_num_blocks,
@@ -44,11 +48,14 @@ class BlockTables:
 
         # Block tables used for model's forward pass.
         # num_kv_cache_groups x [max_num_reqs, max_num_blocks]
+        # 说明：用于模型前向计算的 block tables，从 block_tables 中读取本轮请求的 block ids 后写入这里
         self.input_block_tables: list[torch.Tensor] = [
             torch.zeros_like(block_table) for block_table in self.block_tables
         ]
         self.input_block_table_ptrs = self._make_ptr_tensor(self.input_block_tables)
 
+        # 说明：每个 block table 的行跨度可能不一致，因为对应的逻辑 block size 不同，
+        # 所以单独存储一下
         self.block_table_strides = torch.tensor(
             [b.stride(0) for b in self.block_tables],
             dtype=torch.int64,
@@ -57,12 +64,14 @@ class BlockTables:
         self.block_sizes_tensor = torch.tensor(
             self.block_sizes, dtype=torch.int32, device=self.device
         )
+        # 说明：记录每个 block table 中每个请求当前拥有的 block 数量
         self.num_blocks = torch.zeros(
             self.num_kv_cache_groups,
             self.max_num_reqs,
             dtype=torch.int32,
             device=self.device,
         )
+        # 说明：记录在每个 block table 中每个 token 对应的 slot id
         self.slot_mappings = torch.zeros(
             self.num_kv_cache_groups,
             self.max_num_batched_tokens,
@@ -77,11 +86,14 @@ class BlockTables:
             self.num_kv_cache_groups, self.max_num_reqs + 1, dtype=torch.int32
         )
 
+    # 已阅
     def _make_buffer(self, *args, dtype: torch.dtype) -> CpuGpuBuffer:
         return CpuGpuBuffer(
             *args, dtype=dtype, pin_memory=self.pin_memory, device=self.device
         )
 
+    # 已阅
+    # 说明：创建一个存储指针的张量，指针依次指向输入的每个张量
     def _make_ptr_tensor(self, x: Iterable[torch.Tensor]) -> torch.Tensor:
         # NOTE(woosuk): Use uint64 instead of int64 to cover all possible addresses.
         ptrs_tensor_cpu = torch.tensor(
@@ -92,6 +104,7 @@ class BlockTables:
         )
         return ptrs_tensor_cpu.to(self.device, non_blocking=True)
 
+    # 已阅
     def append_block_ids(
         self,
         # [num_reqs]
@@ -139,6 +152,7 @@ class BlockTables:
             BLOCK_SIZE=1024,  # type: ignore
         )
 
+    # 已阅
     def gather_block_tables(
         self,
         idx_mapping: torch.Tensor,
@@ -158,6 +172,7 @@ class BlockTables:
     def get_dummy_block_tables(self, num_reqs: int) -> tuple[torch.Tensor, ...]:
         return tuple(block_table[:num_reqs] for block_table in self.input_block_tables)
 
+    # 已阅
     def compute_slot_mappings(
         self,
         query_start_loc: torch.Tensor,
@@ -186,6 +201,7 @@ class BlockTables:
         return self.slot_mappings[:, :num_tokens]
 
 
+# 已阅
 @triton.jit
 def _append_block_ids_kernel(
     # Inputs
@@ -203,27 +219,40 @@ def _append_block_ids_kernel(
     # Constants
     BLOCK_SIZE: tl.constexpr,
 ):
+    # 说明：kv cache group 索引，对应一个 block table
     group_id = tl.program_id(0)
+    # 说明：对应的请求在 batch 中的索引
     batch_idx = tl.program_id(1)
     req_idx = tl.load(req_indices + batch_idx)
     do_overwrite = tl.load(overwrite + batch_idx)
 
+    # 说明：计算当前请求新增的 block 数量
     group_new_blocks_ptr = cu_num_new_blocks_ptr + group_id * cu_num_new_blocks_stride
+    # 说明：start_idx 是当前请求加入之前的 block 累积计数，后面在读取 new_block_ids 时用于计算读取位置
     start_idx = tl.load(group_new_blocks_ptr + batch_idx)
+    # 说明：end_idx 是当前请求加入之后的 block 累积计数
     end_idx = tl.load(group_new_blocks_ptr + batch_idx + 1)
     num_new_blocks = end_idx - start_idx
 
+    # 说明：更新请求的 block 数量
+    # 说明：kv cache 组对应的数组的起始位置指针
     group_num_blocks_ptr = num_blocks_ptr + group_id * num_blocks_stride
+    # 说明：这里是当前的 block 数量计数，后面在写入 block table 用于计算写入位置
     dst_start_idx = tl.load(group_num_blocks_ptr + req_idx) if not do_overwrite else 0
     dst_end_idx = dst_start_idx + num_new_blocks
     tl.store(group_num_blocks_ptr + req_idx, dst_end_idx)
 
     # Destination
+    # 说明：block_table_ptrs 是指向 block table 的指针的数组，这里获取 group_id 对应的 block table 指针
     block_table_ptr = _load_ptr(block_table_ptrs + group_id, tl.int32)
+    # 说明：获取当前 block table 的行跨度
     block_table_stride = tl.load(block_table_strides + group_id)
     row_ptr = block_table_ptr + req_idx * block_table_stride
 
+    # 说明：组的 block ids 指针，指向起始位置
     group_new_block_ids_ptr = new_block_ids_ptr + group_id * new_block_ids_stride
+    # 说明：会自动展开并拆分给不同 Warp
+    # 说明：将 new_block_ids 写入到 block table 的对应位置
     for i in range(0, num_new_blocks, BLOCK_SIZE):
         offset = i + tl.arange(0, BLOCK_SIZE)
         block_ids = tl.load(
@@ -234,6 +263,8 @@ def _append_block_ids_kernel(
         )
 
 
+# 已阅
+# 说明：从 block tables 中读取指定请求的 block ids，写入到输入的 block tables 中
 @triton.jit
 def _gather_block_tables_kernel(
     batch_idx_to_req_idx,  # [batch_size]
@@ -246,10 +277,12 @@ def _gather_block_tables_kernel(
 ):
     # kv cache group id
     group_id = tl.program_id(0)
+    # 说明：对应的请求在 batch 中的索引
     batch_idx = tl.program_id(1)
     req_idx = tl.load(batch_idx_to_req_idx + batch_idx)
 
     group_num_blocks_ptr = num_blocks_ptr + group_id * num_blocks_stride
+    # 说明：请求对应的 block 数量
     num_blocks = tl.load(group_num_blocks_ptr + req_idx)
 
     stride = tl.load(block_table_strides + group_id)
@@ -258,12 +291,14 @@ def _gather_block_tables_kernel(
     dst_block_table_ptr = _load_ptr(dst_block_table_ptrs + group_id, tl.int32)
     dst_row_ptr = dst_block_table_ptr + batch_idx * stride
 
+    # 说明：会自动展开并拆分给不同 Warp
     for i in tl.range(0, num_blocks, BLOCK_SIZE):
         offset = i + tl.arange(0, BLOCK_SIZE)
         block_ids = tl.load(src_row_ptr + offset, mask=offset < num_blocks)
         tl.store(dst_row_ptr + offset, block_ids, mask=offset < num_blocks)
 
 
+# 已阅
 @triton.jit
 def _compute_slot_mappings_kernel(
     num_tokens,
@@ -280,6 +315,7 @@ def _compute_slot_mappings_kernel(
 ):
     # kv cache group id
     group_id = tl.program_id(0)
+    # 说明：对应的请求在 batch 中的索引，[0, num_reqs]
     req_idx = tl.program_id(1)
     slot_mapping_ptr = slot_mappings_ptr + group_id * slot_mappings_stride
 
@@ -290,23 +326,32 @@ def _compute_slot_mappings_kernel(
             tl.store(slot_mapping_ptr + offset, PAD_ID, mask=offset < max_num_tokens)
         return
 
+    # 说明：group_id 对应的 block table 指针
     block_table_ptr = _load_ptr(block_table_ptrs + group_id, tl.int32)
     block_table_stride = tl.load(block_table_strides + group_id)
+    # 说明：实际传入的是逻辑 block size
     page_size = tl.load(page_sizes + group_id)
 
+    # start_idx 和 end_idx 是 token 在 input_ids 中的位置范围
+    # 说明：pos 是 token 在所在请求的 token 序列中的位置索引，所含元素与 input_ids 元素一一对应
     start_idx = tl.load(cu_num_tokens + req_idx)
     end_idx = tl.load(cu_num_tokens + req_idx + 1)
     for i in range(start_idx, end_idx, BLOCK_SIZE):
         offset = i + tl.arange(0, BLOCK_SIZE)
+        # 说明：理解为 tl.load(pos_ptr + offset)，加载的是 token 在请求中的位置索引
         positions = tl.load(pos + offset, mask=offset < end_idx, other=0)
+        # 说明：除的是逻辑 block_size，在 block table V2 中，kernel block size 的概念不再出现
         block_indices = positions // page_size
+        # 说明：加载 block number
         block_numbers = tl.load(
             block_table_ptr + req_idx * block_table_stride + block_indices
         )
+        # 说明：计算 slot 的物理 id
         slot_ids = block_numbers * page_size + positions % page_size
         tl.store(slot_mapping_ptr + offset, slot_ids, mask=offset < end_idx)
 
 
+# 已阅
 @triton.jit
 def _load_ptr(ptr_to_ptr, elem_dtype):
     ptr = tl.load(ptr_to_ptr)

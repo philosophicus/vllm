@@ -18,6 +18,8 @@ _NUM_UBATCHES: int = 2
 _CURRENT_CONTEXTS: list[Optional["UBatchContext"]] = []
 
 
+# 待看
+# 两个 ubatch 线程的同步机制
 class UBatchContext:
     """
     Context manager for micro-batching synchronization using threading events.

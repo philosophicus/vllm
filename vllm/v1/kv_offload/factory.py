@@ -13,6 +13,10 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+# 已阅
+# 说明：OffloadingSpecFactory 用于创建 OffloadingSpec 实例；
+# 维护一个注册表，支持通过注册的名称创建对应的 OffloadingSpec 实例；
+# 支持动态加载模块和类名。
 class OffloadingSpecFactory:
     _registry: dict[str, Callable[[], type[OffloadingSpec]]] = {}
 
@@ -36,6 +40,8 @@ class OffloadingSpecFactory:
         kv_transfer_config = config.kv_transfer_config
         assert kv_transfer_config is not None
         extra_config = kv_transfer_config.kv_connector_extra_config
+        # 说明：没有看到主动设置 spec_name 的逻辑，依赖这里的默认值 CPUOffloadingSpec
+        # CPUOffloadingSpec 也是目前系统中唯一的 OffloadingSpec 实现类
         spec_name = extra_config.get("spec_name", "CPUOffloadingSpec")
         if spec_name in cls._registry:
             spec_cls = cls._registry[spec_name]()

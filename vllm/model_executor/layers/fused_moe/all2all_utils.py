@@ -32,6 +32,8 @@ if current_platform.is_cuda_alike():
         )
 
 
+# 已阅
+# 说明：如果使用 DeepEP HT 或 LL 内核，根据需要将隐藏层大小向上取整
 def maybe_roundup_layer_hidden_size(
     hidden_size: int,
     act_dtype: torch.dtype,
@@ -64,6 +66,13 @@ def maybe_roundup_layer_hidden_size(
     return hidden_size
 
 
+# 待看
+# 说明：根据 MoE 量化配置和路由表创建适当的 PrepareAndFinalize 实例；
+# 目前只支持创建 PplxPrepareAndFinalize、DeepEPHTPrepareAndFinalize 和 DeepEPLLPrepareAndFinalize 实例；
+# FlashInferCutlass 内核的 PrepareAndFinalize 实例在 modelopt.py，fp8.py 或 compressed_tensors_moe.py 的
+# maybe_make_prepare_finalize 方法中利用 build_flashinfer_fp8_cutlass_moe_prepare_finalize 或
+# build_flashinfer_fp4_cutlass_moe_prepare_finalize 方法创建，两个方法最终都是对
+# create_flashinfer_prepare_finalize 方法的调用
 def maybe_make_prepare_finalize(
     moe: FusedMoEConfig,
     quant_config: FusedMoEQuantConfig | None,

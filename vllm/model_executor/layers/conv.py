@@ -45,12 +45,19 @@ class ConvLayerBase(CustomOp):
             )
 
         if padding == "same":
+            # 说明：'same' padding 会在输入的每一侧添加足够的零值
+            # 以确保输出与输入具有相同的空间维度大小（this mode doesn’t support any stride values other than 1）
+            # 后面的代码中会验证 stride 是否为 1
+            # 推导：L_out = (L_in + 2*padding - dilation*(kernel_size-1) -1)/stride + 1
+            # L_out = L_in, stride = 1
+            # => padding = dilation * (kernel_size - 1) / 2
             padding = (
                 kernel_size // 2
                 if isinstance(kernel_size, int)
                 else tuple(k // 2 for k in kernel_size)
             )
         elif padding == "valid":
+            # 说明：'valid' padding 相当于不进行 padding
             padding = 0
 
         kernel_size = (
@@ -81,6 +88,7 @@ class ConvLayerBase(CustomOp):
         )
         self.input_size = in_channels * math.prod(self.kernel_size)
 
+        # 说明：weight 的 size 为 (out_channels, in_channels // groups, kernel_T, kernel_H, kernel_W)
         self.weight = nn.Parameter(
             torch.empty(
                 out_channels,
@@ -90,6 +98,7 @@ class ConvLayerBase(CustomOp):
             ),
         )
 
+        # 说明：bias 的 size 为 (out_channels,)
         if bias:
             self.bias = nn.Parameter(torch.empty(self.out_channels, dtype=params_dtype))
         else:
@@ -214,8 +223,12 @@ class Conv3dLayer(ConvLayerBase):
         assert x.dim() == 5
         B, C, T, H, W = x.shape
         K1, K2, K3 = self.kernel_size
+        # 说明：相当于 stride 等于 kernel_size，且 padding 为 0，dilation 为 1
         T, H, W = T // K1, H // K2, W // K3
+        # 说明：变换后的 size 为 (B, C, T, H, W, K1, K2, K3)
         x = x.unfold(2, K1, K1).unfold(3, K2, K2).unfold(4, K3, K3)
+        # 说明：permute 后的 size 为 (B, T, H, W, C, K1, K2, K3)
+        # reshape 后的 size 为 (B*T*H*W, C*K1*K2*K3)
         x = x.permute(0, 2, 3, 4, 1, 5, 6, 7).reshape(-1, self.input_size)
         x = F.linear(
             x,
@@ -223,6 +236,7 @@ class Conv3dLayer(ConvLayerBase):
             self.bias,
         )
         x = x.view(B, T, H, W, self.out_channels).permute(0, 4, 1, 2, 3)
+        # 说明：最终输出的 size 为 (B, out_channels, T, H, W)
         return x
 
     def _forward_conv(self, x: torch.Tensor) -> torch.Tensor:
@@ -238,6 +252,7 @@ class Conv3dLayer(ConvLayerBase):
         )
         return x
 
+    # 说明：在 CustomOp 的 forward 方法中，根据设备类型调用对应的 forward_native 或 forward_cuda 方法
     def forward_native(self, x: torch.Tensor) -> torch.Tensor:
         """Expected input shape: (batch_size, in_channels, time, height, width)"""
         if self.enable_linear:

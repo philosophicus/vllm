@@ -34,6 +34,8 @@ from dataclasses import dataclass
 from vllm.v1.core.kv_cache_utils import BlockHash
 
 
+# 已阅
+# 说明：实现类参考 BlockIDsLoadStoreSpec、GPULoadStoreSpec、CPULoadStoreSpec
 class LoadStoreSpec(ABC):
     """
     Abstract metadata that encapsulates information allowing a worker
@@ -66,6 +68,7 @@ class OffloadingEvent:
     removed: bool
 
 
+# 说明：实现类参考 LRUOffloadingManager 和 ARCOffloadingManager
 class OffloadingManager(ABC):
     @abstractmethod
     def lookup(self, block_hashes: Iterable[BlockHash]) -> int:

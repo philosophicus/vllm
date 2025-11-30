@@ -24,6 +24,7 @@ from vllm.utils.platform_utils import is_pin_memory_available
 logger = init_logger(__name__)
 
 
+# 说明：初始化 model
 def initialize_model(
     vllm_config: VllmConfig,
     *,

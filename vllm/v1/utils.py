@@ -101,6 +101,7 @@ class ConstantList(Generic[T], Sequence):
         return self._x.copy()
 
 
+# 已阅
 class CpuGpuBuffer:
     """Buffer to easily copy tensors between CPU and GPU."""
 

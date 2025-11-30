@@ -36,12 +36,14 @@ class NewRequestData:
     mm_features: list[MultiModalFeatureSpec]
     sampling_params: SamplingParams | None
     pooling_params: PoolingParams | None
+    # 说明：Block IDs for each KV cache group
     block_ids: tuple[list[int], ...]
     num_computed_tokens: int
     lora_request: LoRARequest | None
     prompt_embeds: "torch.Tensor | None" = None
 
     # Only used for v2 model runner.
+    # 说明：prefill_token_ids = prompt_token_ids + output_token_ids
     prefill_token_ids: list[int] | None = None
 
     @classmethod
@@ -115,6 +117,8 @@ class CachedRequestData:
     # For request ids not in resumed_req_ids, new_block_ids will be appended to
     # the request's block IDs. For those in the set, new_block_ids will be used as the
     # request's block IDs instead of appending to the existing block IDs.
+    # 说明：如何 request 被恢复，则使用 new_block_ids 作为该请求的 block IDs；
+    # 否则将 new_block_ids 追加到该请求现有的 block IDs
     resumed_req_ids: set[str]
     # NOTE(woosuk): new_token_ids is only used for pipeline parallelism.
     # When PP is not used, new_token_ids will be empty.

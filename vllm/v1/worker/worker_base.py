@@ -307,6 +307,7 @@ class WorkerWrapperBase:
             # To make vLLM config available during worker initialization
             self.worker = worker_class(**kwargs)
 
+    # 说明：collective_rpc 调用的为该方法
     def initialize_from_config(self, kv_cache_configs: list[Any]) -> None:
         kv_cache_config = kv_cache_configs[self.global_rank]
         assert self.vllm_config is not None

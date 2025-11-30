@@ -93,8 +93,11 @@ class LoRAModelManager:
         self.lora_config = lora_config
         self.device = device
         self.max_num_seqs = max_num_seqs
+        # 说明：CPU 中存储的 LoRA 适配器数量上限 > 一个 batch 中使用的 LoRA 适配器数量上限
         assert self.capacity >= self.lora_slots
+        # 问题：为什么要把 max_num_batched_tokens 向上取整到 8 的倍数？
         self.max_num_batched_tokens = math.ceil(max_num_batched_tokens / 8) * 8
+        # 说明：用于记录每个 LoRA 插槽当前存储的 LoRA 适配器 ID
         self.lora_index_to_id: list[int | None] = [None] * self.lora_slots
         self.vocab_size = vocab_size
         self.packed_modules_mapping = process_packed_modules_mapping(self.model)

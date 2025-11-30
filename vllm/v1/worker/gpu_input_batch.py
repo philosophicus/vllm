@@ -27,6 +27,7 @@ from vllm.v1.utils import copy_slice
 from vllm.v1.worker.block_table import MultiGroupBlockTable
 
 
+# 理解：缓存的请求状态
 @dataclass
 class CachedRequestState:
     req_id: str
@@ -35,6 +36,7 @@ class CachedRequestState:
     sampling_params: SamplingParams | None
     generator: torch.Generator | None
 
+    # 说明：Block IDs for each KV cache group
     block_ids: tuple[list[int], ...]
     num_computed_tokens: int
     output_token_ids: list[int]
@@ -79,6 +81,7 @@ class CachedRequestState:
         return -1
 
 
+# 待看
 class InputBatch:
     def __init__(
         self,
@@ -233,6 +236,9 @@ class InputBatch:
         # Internal representation of per-step batch state changes, used for
         # reordering persistent batch and generating logitsprocs batch state
         # updates. Should reset each step.
+        # # 说明：BatchUpdate 的整体维护逻辑参考
+        # https://docs.vllm.ai/en/latest/design/logits_processors/#how-the-vllm-engine-builds-the-batchupdate-data-structure
+        # 讲得非常清晰
         self.batch_update_builder = BatchUpdateBuilder()
 
         # TODO convert this to LogitsProcessor

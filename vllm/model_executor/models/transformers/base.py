@@ -86,8 +86,11 @@ def vllm_flash_attention_forward(
     self_attn = attention_instances[module.layer_idx]
     if scaling is not None:
         self_attn.impl.scale = float(scaling)
+    # 说明：query, key, value shape: (batch_size, num_heads, seq_len, head_size)
     hidden = query.shape[-2]
+    # 说明：query, key, value shape: (batch_size, seq_len, num_heads, head_size)
     query, key, value = (x.transpose(1, 2) for x in (query, key, value))
+    # 说明：query, key, value shape: (seq_len, batch_size * num_heads * head_size)
     query, key, value = (x.reshape(hidden, -1) for x in (query, key, value))
     return self_attn.forward(query, key, value), None
 

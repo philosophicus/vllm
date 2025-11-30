@@ -16,6 +16,8 @@ from vllm.utils.torch_utils import get_dtype_size
 logger = init_logger(__name__)
 
 
+# 已阅
+# 补充：关键点是 "one layer" 的 KV cache 规格
 @dataclass(frozen=True)
 class KVCacheSpec:
     """
@@ -61,12 +63,15 @@ class KVCacheSpec:
         return copy.deepcopy(specs[0])
 
 
+# 已阅
 @dataclass(frozen=True)
 class AttentionSpec(KVCacheSpec):
     num_kv_heads: int
     head_size: int
     dtype: torch.dtype
 
+    # 已阅
+    # 说明：没有 num_layers
     @property
     def page_size_bytes(self) -> int:
         return (
@@ -78,6 +83,7 @@ class AttentionSpec(KVCacheSpec):
         )
 
 
+# 已阅
 @dataclass(frozen=True)
 class FullAttentionSpec(AttentionSpec):
     """
@@ -101,16 +107,23 @@ class FullAttentionSpec(AttentionSpec):
         if self.head_size_v is None:
             object.__setattr__(self, "head_size_v", self.head_size)
 
+    # 已阅
     def max_memory_usage_bytes(self, vllm_config: VllmConfig) -> int:
         max_model_len = vllm_config.model_config.max_model_len
         dcp_world_size = vllm_config.parallel_config.decode_context_parallel_size
         pcp_world_size = vllm_config.parallel_config.prefill_context_parallel_size
         # Note(hc): each dcp rank only need save
         # (max_model_len//dcp_world_size) tokens locally.
+        # 补充：如果 dcp_world_size * pcp_world_size > 1，则说明 KV cache 在 sequence 维度上被分片了
+        # 两个数相乘是 KV Cache 最终的分片数
         if dcp_world_size * pcp_world_size > 1:
+            # 补充：每个 rank 只需要保存 max_model_len / (dcp_world_size * pcp_world_size) 个 token 的 KV cache
             max_model_len = cdiv(max_model_len, dcp_world_size * pcp_world_size)
+        # 补充：block 个数 * block 大小
         return cdiv(max_model_len, self.block_size) * self.page_size_bytes
 
+    # 已阅
+    # 要求：window_sizes 为空或只有一个值
     @classmethod
     def merge_window_sizes(cls, window_sizes: set[int]) -> int | None:
         if len(window_sizes) == 0:
@@ -123,6 +136,7 @@ class FullAttentionSpec(AttentionSpec):
                 "same window size."
             )
 
+    # 已阅
     @classmethod
     def merge(cls, specs: list[Self]) -> Self:
         """
@@ -150,11 +164,14 @@ class FullAttentionSpec(AttentionSpec):
             head_size=specs[0].head_size,
             head_size_v=specs[0].head_size_v,
             dtype=specs[0].dtype,
+            # 补充：同时存在 sliding_window 有值和无值的 spec 时，会合并出一个有值的 spec
             sliding_window=cls.merge_window_sizes(sliding_window),
             attention_chunk_size=cls.merge_window_sizes(attention_chunk_size),
         )
         for spec in specs:
             for f in fields(AttentionSpec):
+                # 补充：确保除了 sliding_window 和 attention_chunk_size 外，
+                # 其他属性都是相同的
                 assert getattr(spec, f.name) == getattr(merged_spec, f.name), (
                     "All attention layers in the same KV cache group must have "
                     "the same attention spec."
@@ -353,6 +370,9 @@ class SinkFullAttentionSpec(FullAttentionSpec):
         return merged_spec
 
 
+# 已阅
+# 补充：所有层的 KV cache 规格的 block_size 都一致，都是同一种类型且特定属性一致
+# 但 KVCacheSpec 中的 num_kv_heads，head_size 等属性值可能不一样
 @dataclass(frozen=True)
 class UniformTypeKVCacheSpecs(KVCacheSpec):
     """
@@ -364,6 +384,9 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
 
     kv_cache_specs: dict[str, KVCacheSpec]
 
+    # 已阅
+    # 说明：每种 spec 的 hidden size 不一样，则对 page_size_bytes 求和作为整体的 page_size_bytes
+    # 即所有层变成了一个大层
     @property
     def page_size_bytes(self) -> int:
         return sum(spec.page_size_bytes for spec in self.kv_cache_specs.values())
@@ -375,6 +398,9 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
         )
         return max_num_pages * self.page_size_bytes
 
+    # 已阅
+    # 功能：检查所有层的 KV cache spec 是否是同一种类型，
+    # 以及对特定类型 spec 的特定属性值进行一致性检查
     @classmethod
     def is_uniform_type(cls, kv_cache_specs: dict[str, KVCacheSpec]) -> bool:
         """
@@ -417,6 +443,7 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
                 f"Unsupported KV cache spec type: {type(one_spec)}"
             )
 
+    # 已阅
     @classmethod
     def from_specs(cls, kv_cache_specs: dict[str, KVCacheSpec]) -> Self | None:
         """
@@ -430,16 +457,21 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
             return None
 
 
+# 已阅
+# 层级别的 KV cache tensor 规格
 @dataclass
 class KVCacheTensor:
     """
     A class for specifying how the workers should initialize the KV cache.
     """
 
+    # Tensor 总大小
     size: int  # size of the KV cache tensor in bytes
     shared_by: list[str]  # layer names that share the same KV cache tensor
 
 
+# 已阅
+# 多层共享的 KV cache 规格（规格中不包含层数信息）
 @dataclass
 class KVCacheGroupSpec:
     """

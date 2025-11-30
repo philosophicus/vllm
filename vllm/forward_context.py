@@ -218,6 +218,7 @@ class ForwardContext:
 _forward_context: ForwardContext | None = None
 
 
+# 已阅
 def get_forward_context() -> ForwardContext:
     """Get the current forward context."""
     assert _forward_context is not None, (
@@ -227,10 +228,12 @@ def get_forward_context() -> ForwardContext:
     return _forward_context
 
 
+# 已阅
 def is_forward_context_available() -> bool:
     return _forward_context is not None
 
 
+# 已阅
 def create_forward_context(
     attn_metadata: Any,
     vllm_config: VllmConfig,
@@ -253,6 +256,7 @@ def create_forward_context(
     )
 
 
+# 已阅
 @contextmanager
 def override_forward_context(forward_context: ForwardContext | None):
     """A context manager that overrides the current forward context.
@@ -268,6 +272,7 @@ def override_forward_context(forward_context: ForwardContext | None):
         _forward_context = prev_context
 
 
+# 说明：每次执行 execute_model 时都会调用这个函数
 @contextmanager
 def set_forward_context(
     attn_metadata: Any,

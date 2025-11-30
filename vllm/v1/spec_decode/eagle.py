@@ -88,6 +88,7 @@ class EagleProposer:
 
         self.attn_metadata_builder: AttentionMetadataBuilder | None = None
         self.draft_indexer_metadata_builder: AttentionMetadataBuilder | None = None
+        # 说明：eagle layers
         self.attn_layer_names: list[str] = []
         self.indexer_layer_names: list[str] = []
         self.eagle3_use_aux_hidden_state: bool = (
@@ -1249,6 +1250,7 @@ class EagleProposer:
             use_aux_hidden_state = eagle_config.get("use_aux_hidden_state", True)
         return use_aux_hidden_state
 
+    # 已阅
     def validate_same_kv_cache_group(self, kv_cache_config: KVCacheConfig) -> None:
         """
         Validate that all eagle layers belong to the same KVCacheGroup.

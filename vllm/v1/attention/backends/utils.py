@@ -302,6 +302,7 @@ def split_attn_metadata(
 M = TypeVar("M")
 
 
+# 关注 cascade attention
 class AttentionCGSupport(enum.Enum):
     """Constants for the cudagraph support of the attention backend
     Here we do not consider the cascade attention, as currently
@@ -326,6 +327,7 @@ class AttentionMetadataBuilder(abc.ABC, Generic[M]):
     # Does this backend/builder reorder the batch?
     # If not, set this to None. Otherwise set it to the query
     # length that will be pulled into the front of the batch.
+    # 说明：作为 decode_threshold 参数的值传给 split_decodes_and_prefills 方法
     reorder_batch_threshold: int | None = None
     # Does this backend/builder support updating the block table in existing
     # metadata
@@ -925,6 +927,8 @@ def split_decodes_prefills_and_extends(
     )
 
 
+# 说明：前提是该 batch 已经重排序过；将 batch 拆分为前面是 decode 请求，
+# 后面是 prefill 请求，找到 decode 和 prefill 请求的边界
 def split_decodes_and_prefills(
     common_attn_metadata: CommonAttentionMetadata,
     decode_threshold: int = 1,
@@ -961,6 +965,8 @@ def split_decodes_and_prefills(
     query_lens = query_start_loc[1:] - query_start_loc[:-1]
     if query_lens[0].item() > decode_threshold:
         # first request is not decode, so no decode requests
+        # 说明：按照 query 长度排序后的 batch，第一个请求不是 decode 请求，
+        # 后面也不会有 decode 请求
         return 0, num_reqs, 0, num_tokens
 
     if require_uniform:
@@ -1013,6 +1019,10 @@ def split_prefill_chunks(
     return chunk_bounds
 
 
+# 已阅
+# 说明：Reorder the batch for improved efficiency. Depending on the attention 
+# backend implementation and the current characteristics of the batch, zero 
+# or more Swap Move operations may be applied to reorder the batch
 def reorder_batch_to_split_decodes_and_prefills(
     input_batch: "InputBatch",
     scheduler_output: "SchedulerOutput",
@@ -1052,6 +1062,7 @@ def reorder_batch_to_split_decodes_and_prefills(
     num_decodes = int(is_decode.sum())
     num_extends = int(is_extend.sum())
 
+    # 说明：重排序后的目标区域
     target_regions = np.zeros(num_reqs, dtype=np.int32)
     target_regions[num_decodes : num_decodes + num_extends] = 1
     target_regions[num_decodes + num_extends :] = 2
@@ -1073,6 +1084,9 @@ def reorder_batch_to_split_decodes_and_prefills(
         while src != dst:
             input_batch.swap_states(src, dst)
             # Mark dst as done by updating its destination to itself
+            # 说明：原来的 src 现在到达 dst 位置，因为已经处理完了，所以需要将 det 位置的目的地设置为自己；
+            # 原来的 dst 现在到达 src，需要与原来 dst 的目标位置进行比较
+            # 所以先保留原来 dst 位置的目的地 next_dst，然后标记 dst 位置为已处理完（目的地为自己）
             next_dst = src_dest_map.get(dst, dst)
             src_dest_map[dst] = dst
             dst = next_dst
@@ -1128,6 +1142,7 @@ class KVSharingFastPrefillMetadata(Protocol):
     num_logits_indices: int | None = None
 
 
+# 待看
 def create_fast_prefill_custom_backend(
     prefix: str,
     underlying_attn_backend: type[AttentionBackend],

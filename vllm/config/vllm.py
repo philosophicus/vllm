@@ -1454,6 +1454,7 @@ def get_current_vllm_config() -> VllmConfig:
 T = TypeVar("T")
 
 
+# 已阅
 def get_layers_from_vllm_config(
     vllm_config: VllmConfig,
     layer_type: type[T],

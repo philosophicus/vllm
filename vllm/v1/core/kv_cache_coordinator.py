@@ -30,6 +30,7 @@ class KVCacheCoordinator(ABC):
     Coordinate the KV cache of different KV cache groups.
     """
 
+    # 已阅
     def __init__(
         self,
         kv_cache_config: KVCacheConfig,
@@ -56,6 +57,7 @@ class KVCacheCoordinator(ABC):
 
         # Needs special handling for find_longest_cache_hit if eagle is enabled
         self.use_eagle = use_eagle
+        # 补充：每一个 kv_cache_group 对应一个 SingleTypeKVCacheManager
         self.single_type_managers = tuple(
             get_manager_for_kv_cache_spec(
                 kv_cache_spec=kv_cache_group.kv_cache_spec,
@@ -68,6 +70,7 @@ class KVCacheCoordinator(ABC):
             for i, kv_cache_group in enumerate(self.kv_cache_config.kv_cache_groups)
         )
 
+    # 已阅
     def get_num_blocks_to_allocate(
         self,
         request_id: str,
@@ -109,6 +112,7 @@ class KVCacheCoordinator(ABC):
                 )
         return num_blocks_to_allocate
 
+    # 待看
     def allocate_new_computed_blocks(
         self,
         request_id: str,
@@ -135,6 +139,7 @@ class KVCacheCoordinator(ABC):
                 num_external_computed_tokens,
             )
 
+    # 已阅
     def allocate_new_blocks(
         self,
         request_id: str,
@@ -165,6 +170,7 @@ class KVCacheCoordinator(ABC):
             for manager in self.single_type_managers
         )
 
+    # 已阅
     def cache_blocks(self, request: Request, num_computed_tokens: int) -> None:
         """
         Cache the blocks for the request.
@@ -205,6 +211,7 @@ class KVCacheCoordinator(ABC):
             for manager in self.single_type_managers
         ]
 
+    # 已阅，待看
     def remove_skipped_blocks(
         self, request_id: str, total_computed_tokens: int
     ) -> None:
@@ -331,6 +338,7 @@ class UnitaryKVCacheCoordinator(KVCacheCoordinator):
             "UnitaryKVCacheCoordinator assumes only one kv cache group"
         )
 
+    # 已阅
     def find_longest_cache_hit(
         self,
         block_hashes: list[BlockHash],
@@ -350,6 +358,7 @@ class UnitaryKVCacheCoordinator(KVCacheCoordinator):
         return hit_blocks, len(hit_blocks[0]) * self.block_size
 
 
+# 已阅
 class HybridKVCacheCoordinator(KVCacheCoordinator):
     """
     KV cache coordinator for hybrid models with multiple KV cache types, and

@@ -21,6 +21,9 @@ from vllm.model_executor.layers.quantization.base_config import (
 logger = init_logger(__name__)
 
 
+# 说明：重点是 maybe_make_prepare_finalize 和 select_gemm_impl 方法，
+# 分别用来创建 PrepareAndFinalize 实例和选择合适的 GEMM 实现，最终创建出 FusedMoeModularKernel 实例；
+# 并且，只有当 prepare_finalize 不为 None 时，FusedMoEModularMethod 才会被使用
 class FusedMoEMethodBase(QuantizeMethodBase):
     def __init__(self, moe: FusedMoEConfig):
         super().__init__()
@@ -39,6 +42,8 @@ class FusedMoEMethodBase(QuantizeMethodBase):
     ):
         raise NotImplementedError
 
+    # 说明：weight_scale_2 模式是指 FP4 量化中使用的两级缩放因子模式，
+    # 其中第二级用于 Tensor 级别的全局缩放 
     def uses_weight_scale_2_pattern(self) -> bool:
         """
         Returns True if this quantization method uses 'weight_scale_2' pattern

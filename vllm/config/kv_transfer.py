@@ -103,6 +103,7 @@ class KVTransferConfig:
                 f"is set, supported roles are {get_args(KVRole)}"
             )
 
+    # 说明：是任一 KV 角色都可以
     @property
     def is_kv_transfer_instance(self) -> bool:
         return self.kv_connector is not None and self.kv_role in get_args(KVRole)

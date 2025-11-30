@@ -13,6 +13,8 @@ from vllm.v1.kv_offload.abstract import (
 from vllm.v1.kv_offload.backend import Backend, BlockStatus
 
 
+# ARC：核心目标是在 LRU 和 LFU 之间动态自适应，平衡缓存的 “时间局部性”（最近访问的内容）和
+#  “频率局部性”（高频访问的内容），最终实现接近理论最优的缓存命中率
 class ARCOffloadingManager(OffloadingManager):
     """
     An OffloadingManager implementing the ARC (Adaptive Replacement Cache)

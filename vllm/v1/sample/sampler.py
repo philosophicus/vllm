@@ -169,6 +169,7 @@ class Sampler(nn.Module):
                         processed_logprobs = logits
                     elif logprobs_mode == "processed_logprobs":
                         processed_logprobs = self.compute_logprobs(logits)
+                # 说明：如果所有请求都是贪婪采样，则提前退出
                 return greedy_sampled, processed_logprobs
 
         assert sampling_metadata.temperature is not None
@@ -180,6 +181,11 @@ class Sampler(nn.Module):
 
         # Apply logits processors that only apply to random sampling
         # (argmax invariant)
+        # 补充：The vLLM logits processor abstraction requires the engine to 
+        # apply logits processors at batch granularity; therefore in practice 
+        # the argmax-invariant logits processors can only be skipped when 
+        # the entire batch uses greedy sampling.
+        # 参考上面的 all_greedy 提前退出的逻辑
         for processor in sampling_metadata.logitsprocs.argmax_invariant:
             logits = processor.apply(logits)
 
